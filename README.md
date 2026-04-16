@@ -65,9 +65,9 @@ the **Settings** tab.
 
 ## Companion tools
 
-- [klippbok-mcp](https://github.com/crsrdsnationalvideoteam/klippbok-mcp) — dataset curation MCP server
-- [musubi-mcp](https://github.com/crsrdsnationalvideoteam/musubi-mcp) — Wan/FLUX/Z-Image training MCP server
-- [ltx-trainer-mcp](https://github.com/crsrdsnationalvideoteam/ltx-trainer-mcp) — agent-driven LTX-2 training (MCP version of this launcher)
+- [klippbok-mcp](https://github.com/hoodtronik/klippbok-mcp) — dataset curation MCP server
+- [musubi-mcp](https://github.com/hoodtronik/musubi-mcp) — Wan/FLUX/Z-Image training MCP server
+- [ltx-trainer-mcp](https://github.com/hoodtronik/ltx-trainer-mcp) — agent-driven LTX-2 training (MCP version of this launcher)
 
 ## License
 

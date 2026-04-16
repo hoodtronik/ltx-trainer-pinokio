@@ -61,7 +61,7 @@ via the Project tab's "LTX-2 repo path" field.
 ## Open items
 
 - **Wire GitHub remote** when the user provides a URL.
-  Convention: `git@github.com:crsrdsnationalvideoteam/ltx-trainer-pinokio.git`.
+  Convention: `git@github.com:hoodtronik/ltx-trainer-pinokio.git`.
 - **Ship an `icon.png`** at the repo root.
 - **No end-to-end training test yet** — the user's Windows machine can't
   run `train.py` natively (triton/bitsandbytes are Linux-only). First
