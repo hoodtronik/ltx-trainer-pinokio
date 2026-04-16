@@ -12,6 +12,10 @@ app/outputs/
 app/runs/
 app/.user_settings.json
 detected_hardware.json
+# CLAUDE-NOTE: app/LTX-2/ is a legacy nested clone. The canonical LTX-2
+# location is the sibling dir ../LTX-2 (referenced via the Project tab).
+# Gitignored so anyone's local nested copy doesn't get tracked here.
+app/LTX-2/
 
 .DS_Store
 Thumbs.db
