@@ -5,7 +5,7 @@ TODO (incremental build plan):
   [x] Project tab — LTX-2 dir + model paths, persisted in .user_settings.json
   [x] Dataset Prep tab — split_scenes, caption_videos, process_dataset
       with streaming subprocess output
-  [ ] Config tab — YAML template loader + structured editor +
+  [x] Config tab — YAML template loader + structured editor +
       raw YAML textarea
   [ ] Train tab — launch train.py, stream logs, checkpoint browser
   [ ] Generate tab — ltx-pipelines inference with LoRA
@@ -23,6 +23,7 @@ from pathlib import Path
 
 import gradio as gr
 
+import config_builder
 import runner
 import settings as settings_mod
 from hardware import get_hardware_info
@@ -220,6 +221,172 @@ def process_dataset_fn(
 
 def cancel_fn(proc):
     msg = runner.cancel_process(proc)
+    return msg
+
+
+# =============================================================================
+# Config tab — template load, form → YAML, validate, save
+# =============================================================================
+
+
+def _quantization_for_ui(yaml_val) -> str:
+    """YAML null → 'none' string so Gradio Dropdown has a clean value."""
+    if yaml_val is None:
+        return "none"
+    return str(yaml_val)
+
+
+def _config_template_to_form(cfg: dict) -> tuple:
+    """Extract the form-field values from a parsed config dict.
+
+    Returns a tuple in the exact order the Config tab's Load button
+    outputs expect. Keep this order in sync with the component list in
+    _config_tab().
+    """
+    model = cfg.get("model", {})
+    lora = cfg.get("lora") or {}
+    ts = cfg.get("training_strategy", {})
+    opt = cfg.get("optimization", {})
+    accel = cfg.get("acceleration", {})
+    data = cfg.get("data", {})
+    ck = cfg.get("checkpoints", {})
+
+    return (
+        # model
+        model.get("training_mode", "lora"),
+        model.get("load_checkpoint") or "",
+        # lora
+        int(lora.get("rank", 32)),
+        int(lora.get("alpha", 32)),
+        float(lora.get("dropout", 0.0)),
+        # training_strategy
+        ts.get("name", "text_to_video"),
+        float(ts.get("first_frame_conditioning_p", 0.5)),
+        bool(ts.get("with_audio", False)),
+        # optimization
+        float(opt.get("learning_rate", 1e-4)),
+        int(opt.get("steps", 2000)),
+        int(opt.get("batch_size", 1)),
+        int(opt.get("gradient_accumulation_steps", 1)),
+        opt.get("optimizer_type", "adamw"),
+        opt.get("scheduler_type", "linear"),
+        bool(opt.get("enable_gradient_checkpointing", True)),
+        # acceleration
+        accel.get("mixed_precision_mode", "bf16"),
+        _quantization_for_ui(accel.get("quantization")),
+        bool(accel.get("load_text_encoder_in_8bit", False)),
+        # data
+        int(data.get("num_dataloader_workers", 2)),
+        # checkpoints
+        int(ck.get("interval") or 250),
+        int(ck.get("keep_last_n") if ck.get("keep_last_n") is not None else -1),
+        # top-level
+        int(cfg.get("seed", 42)),
+    )
+
+
+def config_load_template_fn(template_name: str):
+    """Load a template and return (form_values..., yaml_text, status)."""
+    try:
+        s = settings_mod.load()
+        cfg = config_builder.load_template(template_name, s)
+        cfg = config_builder.apply_project_paths(cfg, s)
+    except config_builder.ConfigBuilderError as exc:
+        # On failure, leave the form alone (gr.update()) and show an error.
+        skip = [gr.update() for _ in range(22)]
+        return (*skip, gr.update(), f"❌ {exc}")
+
+    form_values = _config_template_to_form(cfg)
+    yaml_text = config_builder.dict_to_yaml(cfg)
+    status = (
+        f"✅ Loaded **{config_builder.TEMPLATE_LABELS[template_name]}** "
+        "from the trainer's config directory (paths injected from Project tab)."
+    )
+    return (*form_values, yaml_text, status)
+
+
+def config_regenerate_yaml_fn(
+    template_name: str,
+    training_mode: str,
+    load_checkpoint: str,
+    lora_rank: int,
+    lora_alpha: int,
+    lora_dropout: float,
+    strategy_name: str,
+    first_frame_conditioning_p: float,
+    with_audio: bool,
+    learning_rate: float,
+    steps: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    optimizer_type: str,
+    scheduler_type: str,
+    enable_gradient_checkpointing: bool,
+    mixed_precision_mode: str,
+    quantization: str,
+    load_text_encoder_in_8bit: bool,
+    num_dataloader_workers: int,
+    checkpoint_interval: int,
+    keep_last_n: int,
+    seed: int,
+) -> tuple[str, str]:
+    """Build YAML from the template + form overrides. Returns (yaml, status)."""
+    try:
+        s = settings_mod.load()
+        cfg = config_builder.load_template(template_name, s)
+        cfg = config_builder.apply_project_paths(cfg, s)
+    except config_builder.ConfigBuilderError as exc:
+        return "", f"❌ {exc}"
+
+    form = config_builder.FormOverrides(
+        training_mode=training_mode,
+        load_checkpoint=load_checkpoint.strip() or None,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        strategy_name=strategy_name,
+        first_frame_conditioning_p=first_frame_conditioning_p,
+        with_audio=with_audio,
+        learning_rate=learning_rate,
+        steps=steps,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        optimizer_type=optimizer_type,
+        scheduler_type=scheduler_type,
+        enable_gradient_checkpointing=enable_gradient_checkpointing,
+        mixed_precision_mode=mixed_precision_mode,
+        quantization=quantization,
+        load_text_encoder_in_8bit=load_text_encoder_in_8bit,
+        num_dataloader_workers=num_dataloader_workers,
+        checkpoint_interval=checkpoint_interval,
+        keep_last_n=keep_last_n,
+        seed=seed,
+    )
+    cfg = config_builder.apply_form_overrides(cfg, form)
+    return (
+        config_builder.dict_to_yaml(cfg),
+        "🔄 Regenerated YAML from form. The raw YAML below is now the "
+        "source of truth for Save — edit it directly to override any "
+        "advanced keys the form doesn't expose (validation prompts, "
+        "STG settings, wandb, etc.).",
+    )
+
+
+def config_validate_fn(yaml_text: str) -> str:
+    try:
+        cfg = config_builder.yaml_to_dict(yaml_text)
+    except config_builder.ConfigBuilderError as exc:
+        return f"❌ {exc}"
+    warnings = config_builder.validate_for_save(cfg)
+    if not warnings:
+        return "✅ Config parses and all paths look valid."
+    return "\n\n".join(warnings)
+
+
+def config_save_fn(yaml_text: str, out_path: str) -> str:
+    if not out_path.strip():
+        return "❌ Please specify a save path."
+    ok, msg = config_builder.save_config(yaml_text, Path(out_path.strip()))
     return msg
 
 
@@ -516,6 +683,165 @@ def _dataset_prep_tab(default_output_dir: str) -> None:
         pd_cancel.click(fn=cancel_fn, inputs=[pd_proc], outputs=[pd_log])
 
 
+def _config_tab(initial: dict) -> dict:
+    """Build the Config tab. Returns a dict of handles the builder wires up."""
+    gr.Markdown(
+        "Author a training YAML config. Pick a template, tweak common "
+        "fields in the form, then optionally edit the raw YAML for "
+        "advanced keys (validation prompts, STG settings, wandb, etc.). "
+        "Model paths auto-populate from the Project tab."
+    )
+
+    with gr.Row():
+        template = gr.Dropdown(
+            label="Template",
+            choices=[
+                (label, key) for key, label in config_builder.TEMPLATE_LABELS.items()
+            ],
+            value="lora",
+        )
+        load_btn = gr.Button("📥 Load template", variant="primary")
+
+    default_save = str(Path(initial["output_dir"]).parent / "configs" / "my_training.yaml")
+    save_path = gr.Textbox(
+        label="Save config to",
+        value=default_save,
+        info="Where the YAML will be written when you click Save.",
+    )
+
+    load_status = gr.Markdown("")
+
+    gr.Markdown("### Common fields")
+
+    with gr.Accordion("Model", open=True):
+        with gr.Row():
+            training_mode = gr.Dropdown(
+                label="Training mode",
+                choices=["lora", "full"],
+                value="lora",
+                info="Full fine-tune needs 80GB+ VRAM.",
+            )
+            load_checkpoint = gr.Textbox(
+                label="Resume from checkpoint (optional)",
+                placeholder="/path/to/checkpoint-1000.safetensors",
+            )
+
+    with gr.Accordion("LoRA (ignored if training_mode=full)", open=True):
+        with gr.Row():
+            lora_rank = gr.Number(label="Rank", value=32, precision=0)
+            lora_alpha = gr.Number(label="Alpha", value=32, precision=0)
+            lora_dropout = gr.Slider(label="Dropout", minimum=0.0, maximum=0.5, step=0.05, value=0.0)
+
+    with gr.Accordion("Training strategy", open=True):
+        with gr.Row():
+            strategy_name = gr.Dropdown(
+                label="Strategy",
+                choices=["text_to_video", "video_to_video"],
+                value="text_to_video",
+                info="video_to_video = IC-LoRA mode (needs reference videos).",
+            )
+            first_frame_p = gr.Slider(
+                label="First-frame conditioning probability",
+                minimum=0.0, maximum=1.0, step=0.05, value=0.5,
+                info="Higher = closer to image-to-video.",
+            )
+            with_audio = gr.Checkbox(label="Joint audio-video training", value=True)
+
+    with gr.Accordion("Optimization", open=True):
+        with gr.Row():
+            learning_rate = gr.Number(label="Learning rate", value=1e-4)
+            steps = gr.Number(label="Training steps", value=2000, precision=0)
+            batch_size = gr.Number(label="Batch size", value=1, precision=0)
+            grad_accum = gr.Number(label="Gradient accumulation", value=1, precision=0)
+        with gr.Row():
+            optimizer_type = gr.Dropdown(
+                label="Optimizer",
+                choices=["adamw", "adamw8bit"],
+                value="adamw",
+                info="adamw8bit saves ~75% optimizer VRAM.",
+            )
+            scheduler_type = gr.Dropdown(
+                label="Scheduler",
+                choices=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial"],
+                value="linear",
+            )
+            grad_ckpt = gr.Checkbox(label="Gradient checkpointing", value=True,
+                                    info="Slower, but required on <48GB GPUs.")
+
+    with gr.Accordion("Acceleration / precision", open=False):
+        with gr.Row():
+            mixed_precision = gr.Dropdown(
+                label="Mixed precision",
+                choices=["no", "fp16", "bf16"],
+                value="bf16",
+            )
+            quantization = gr.Dropdown(
+                label="Model quantization",
+                choices=["none", "int8-quanto", "int4-quanto", "fp8-quanto"],
+                value="none",
+                info="Use int8-quanto on 32GB cards.",
+            )
+            te_8bit = gr.Checkbox(label="Text encoder in 8-bit", value=False)
+
+    with gr.Accordion("Data / Checkpoints / Misc", open=False):
+        with gr.Row():
+            dl_workers = gr.Number(label="Dataloader workers", value=2, precision=0)
+            ckpt_interval = gr.Number(label="Checkpoint every N steps", value=250, precision=0)
+            keep_last_n = gr.Number(label="Keep last N checkpoints (-1 = all)", value=-1, precision=0)
+            seed = gr.Number(label="Seed", value=42, precision=0)
+
+    gr.Markdown("---\n### Raw YAML (source of truth for Save)")
+
+    yaml_box = gr.Textbox(
+        label="YAML",
+        lines=30,
+        max_lines=80,
+        interactive=True,
+        value="# Click 'Load template' above to populate this box.\n",
+    )
+
+    with gr.Row():
+        regen_btn = gr.Button("🔄 Regenerate YAML from form")
+        validate_btn = gr.Button("🔍 Validate")
+        save_btn = gr.Button("💾 Save config", variant="primary")
+
+    save_status = gr.Markdown("")
+
+    return {
+        "template": template,
+        "load_btn": load_btn,
+        "save_path": save_path,
+        "load_status": load_status,
+        "training_mode": training_mode,
+        "load_checkpoint": load_checkpoint,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "strategy_name": strategy_name,
+        "first_frame_p": first_frame_p,
+        "with_audio": with_audio,
+        "learning_rate": learning_rate,
+        "steps": steps,
+        "batch_size": batch_size,
+        "grad_accum": grad_accum,
+        "optimizer_type": optimizer_type,
+        "scheduler_type": scheduler_type,
+        "grad_ckpt": grad_ckpt,
+        "mixed_precision": mixed_precision,
+        "quantization": quantization,
+        "te_8bit": te_8bit,
+        "dl_workers": dl_workers,
+        "ckpt_interval": ckpt_interval,
+        "keep_last_n": keep_last_n,
+        "seed": seed,
+        "yaml_box": yaml_box,
+        "regen_btn": regen_btn,
+        "validate_btn": validate_btn,
+        "save_btn": save_btn,
+        "save_status": save_status,
+    }
+
+
 def _settings_tab(initial: dict) -> None:
     gr.Markdown(
         "Advanced knobs rarely need tweaking. The HuggingFace token is used "
@@ -569,7 +895,7 @@ def build_ui() -> gr.Blocks:
                 _dataset_prep_tab(default_output_dir=initial["output_dir"])
 
             with gr.Tab("Config"):
-                gr.Markdown("*Coming next — YAML template loader + editor.*")
+                cfg = _config_tab(initial)
 
             with gr.Tab("Train"):
                 gr.Markdown("*Coming after Config.*")
@@ -598,6 +924,44 @@ def build_ui() -> gr.Blocks:
         ]
         project_save_btn.click(fn=_save_settings_from_ui, inputs=all_inputs, outputs=[project_save_status])
         settings_save_btn.click(fn=_save_settings_from_ui, inputs=all_inputs, outputs=[settings_save_status])
+
+        # ---------- Config tab wiring ----------
+        # Form components in the exact order _config_template_to_form emits.
+        form_components = [
+            cfg["training_mode"], cfg["load_checkpoint"],
+            cfg["lora_rank"], cfg["lora_alpha"], cfg["lora_dropout"],
+            cfg["strategy_name"], cfg["first_frame_p"], cfg["with_audio"],
+            cfg["learning_rate"], cfg["steps"], cfg["batch_size"], cfg["grad_accum"],
+            cfg["optimizer_type"], cfg["scheduler_type"], cfg["grad_ckpt"],
+            cfg["mixed_precision"], cfg["quantization"], cfg["te_8bit"],
+            cfg["dl_workers"],
+            cfg["ckpt_interval"], cfg["keep_last_n"],
+            cfg["seed"],
+        ]
+
+        cfg["load_btn"].click(
+            fn=config_load_template_fn,
+            inputs=[cfg["template"]],
+            outputs=[*form_components, cfg["yaml_box"], cfg["load_status"]],
+        )
+
+        cfg["regen_btn"].click(
+            fn=config_regenerate_yaml_fn,
+            inputs=[cfg["template"], *form_components],
+            outputs=[cfg["yaml_box"], cfg["save_status"]],
+        )
+
+        cfg["validate_btn"].click(
+            fn=config_validate_fn,
+            inputs=[cfg["yaml_box"]],
+            outputs=[cfg["save_status"]],
+        )
+
+        cfg["save_btn"].click(
+            fn=config_save_fn,
+            inputs=[cfg["yaml_box"], cfg["save_path"]],
+            outputs=[cfg["save_status"]],
+        )
 
     return ui
 

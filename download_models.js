@@ -12,23 +12,28 @@ module.exports = {
     {
       method: "input",
       params: {
-        title: "Download LTX-2 models from HuggingFace",
+        title: "Download LTX-2.3 models from HuggingFace",
         description: [
-          "This will download ~80 GB total to app/models/:",
-          "  • Lightricks/LTX-2 → ltx-2-19b-dev.safetensors",
-          "  • google/gemma-3-12b-it-qat-q4_0-unquantized (full dir)",
-          "  • Lightricks/LTX-2 → ltx-2-spatial-upscaler-x2-1.0.safetensors (for inference)",
-          "  • Lightricks/LTX-2 → ltx-2-22b-distilled-lora-384.safetensors (for inference)",
+          "LTX-2 has two current model lines:",
+          "  • LTX-2.3 (22B) — current release, default here",
+          "  • LTX-2   (19B) — older, still supported by the trainer",
           "",
-          "You can skip any of these by un-checking them. If you already",
-          "have models elsewhere, skip everything and set paths in the",
-          "Settings tab of the UI instead.",
+          "This will download ~80 GB to app/models/. You can uncheck any",
+          "item, and you can pick the older 19B checkpoint instead of 22B",
+          "via the dropdown below.",
           "",
           "A HuggingFace token is required for Gemma (gated model).",
         ].join("\n"),
         form: [
           { key: "hf_token", type: "password", title: "HuggingFace token (required for Gemma)", default: "" },
-          { key: "dl_ltx", type: "checkbox", title: "LTX-2 checkpoint (ltx-2-19b-dev.safetensors, ~38 GB)", default: true },
+          {
+            key: "main_variant",
+            type: "select",
+            title: "Main checkpoint variant",
+            choices: ["ltx-2.3-22b (current)", "ltx-2-19b (legacy)"],
+            default: "ltx-2.3-22b (current)",
+          },
+          { key: "dl_main", type: "checkbox", title: "Main checkpoint (~40 GB)", default: true },
           { key: "dl_gemma", type: "checkbox", title: "Gemma 3 12B text encoder (~24 GB)", default: true },
           { key: "dl_upscaler", type: "checkbox", title: "Spatial upscaler (~2 GB) — inference only", default: true },
           { key: "dl_distilled", type: "checkbox", title: "Distilled LoRA (~1 GB) — inference only", default: true },
@@ -48,7 +53,25 @@ module.exports = {
       },
     },
 
-    // LTX-2 main checkpoint.
+    // Main LTX-2 checkpoint — dispatches to the selected variant.
+    // CLAUDE-NOTE: LTX-2.3 (22B) lives in the Lightricks/LTX-2.3 HF repo,
+    // LTX-2 (19B) lives in Lightricks/LTX-2. Both are supported by the
+    // same trainer; the user picks via the `main_variant` form field.
+    {
+      method: "shell.run",
+      params: {
+        venv: "env",
+        env: {
+          HF_TOKEN: "{{input.hf_token}}",
+          HF_HUB_ENABLE_HF_TRANSFER: "1",
+        },
+        message: [
+          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-dev.safetensors --local-dir app/models/ltx-2.3",
+        ],
+      },
+      when: "{{input.dl_main && input.main_variant === 'ltx-2.3-22b (current)'}}",
+    },
+
     {
       method: "shell.run",
       params: {
@@ -61,7 +84,7 @@ module.exports = {
           "huggingface-cli download Lightricks/LTX-2 ltx-2-19b-dev.safetensors --local-dir app/models/ltx-2",
         ],
       },
-      when: "{{input.dl_ltx}}",
+      when: "{{input.dl_main && input.main_variant === 'ltx-2-19b (legacy)'}}",
     },
 
     // Gemma text encoder.
@@ -80,7 +103,8 @@ module.exports = {
       when: "{{input.dl_gemma}}",
     },
 
-    // Spatial upscaler (inference).
+    // Spatial upscaler (inference). Lives in the LTX-2.3 repo for both
+    // model lines — there's a single upscaler shared across versions.
     {
       method: "shell.run",
       params: {
@@ -90,13 +114,13 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upscaler-x2-1.0.safetensors --local-dir app/models/ltx-2",
+          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.0.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
       when: "{{input.dl_upscaler}}",
     },
 
-    // Distilled LoRA (inference).
+    // Distilled LoRA (inference, for two-stage pipelines).
     {
       method: "shell.run",
       params: {
@@ -106,7 +130,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2 ltx-2-22b-distilled-lora-384.safetensors --local-dir app/models/ltx-2",
+          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-distilled-lora-384.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
       when: "{{input.dl_distilled}}",
