@@ -34,11 +34,14 @@ module.exports = {
     },
 
     // Refresh Gradio UI deps (in case app/requirements.txt changed).
+    // CLAUDE-NOTE: Uses `uv pip install --python <venv-python>` — the
+    // Gradio venv is pip-less (uv venv default) so we can't call
+    // `python -m pip` inside it.
     {
       method: "shell.run",
       params: {
         message: [
-          "{{platform === 'win32' ? 'env\\\\Scripts\\\\python.exe -m pip install -r app/requirements.txt' : 'env/bin/python -m pip install -r app/requirements.txt'}}",
+          "{{platform === 'win32' ? 'uv pip install --python env\\\\Scripts\\\\python.exe -r app/requirements.txt' : 'uv pip install --python env/bin/python -r app/requirements.txt'}}",
         ],
       },
     },

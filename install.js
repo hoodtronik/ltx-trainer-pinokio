@@ -71,13 +71,16 @@ module.exports = {
     // installed from phase 1, (b) it resolves a compatible Python (3.10-3.12,
     // since LTX-2 pins >=3.10 and Gradio works cleanly in that range) even
     // if system python is 3.13+.
+    //
+    // `uv venv` creates a pip-less venv, so we use `uv pip install --python`
+    // to install directly against the venv's interpreter — no need to
+    // bootstrap pip into the venv first.
     {
       method: "shell.run",
       params: {
         message: [
           "uv venv env --python 3.12",
-          "{{platform === 'win32' ? 'env\\\\Scripts\\\\python.exe -m pip install --upgrade pip' : 'env/bin/python -m pip install --upgrade pip'}}",
-          "{{platform === 'win32' ? 'env\\\\Scripts\\\\python.exe -m pip install -r app/requirements.txt' : 'env/bin/python -m pip install -r app/requirements.txt'}}",
+          "{{platform === 'win32' ? 'uv pip install --python env\\\\Scripts\\\\python.exe -r app/requirements.txt' : 'uv pip install --python env/bin/python -r app/requirements.txt'}}",
         ],
       },
     },

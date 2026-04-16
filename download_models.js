@@ -37,12 +37,13 @@ module.exports = {
     },
 
     // Ensure huggingface-cli is in the venv.
+    // CLAUDE-NOTE: Gradio venv is pip-less — use `uv pip install --python`
+    // to install against the venv's interpreter without pip bootstrap.
     {
       method: "shell.run",
       params: {
-        venv: "env",
         message: [
-          "python -m pip install -U 'huggingface_hub[cli,hf_transfer]'",
+          "{{platform === 'win32' ? 'uv pip install --python env\\\\Scripts\\\\python.exe -U huggingface_hub[cli,hf_transfer]' : 'uv pip install --python env/bin/python -U huggingface_hub[cli,hf_transfer]'}}",
         ],
       },
     },
