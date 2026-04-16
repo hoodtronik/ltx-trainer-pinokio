@@ -202,6 +202,76 @@ def run_caption_videos(
     yield from stream_command(cmd, root)
 
 
+def run_train(
+    settings: Settings,
+    config_path: str,
+    *,
+    multi_gpu: bool = False,
+    accelerate_config: str = "ddp",
+    extra_args: str = "",
+) -> Iterator[tuple[str, subprocess.Popen | None]]:
+    """Launch training. Streams logs until train.py exits (or user cancels).
+
+    Single-GPU: `uv run python packages/ltx-trainer/scripts/train.py <config>`
+    Multi-GPU:  `uv run accelerate launch --config_file configs/accelerate/<name>.yaml \\
+                       packages/ltx-trainer/scripts/train.py <config>`
+    """
+    root = _ltx_root(settings)
+    config_abs = resolve_path(config_path)
+    if not Path(config_abs).is_file():
+        raise RunnerError(f"Config file not found: {config_abs}")
+
+    uv = settings.uv_path or "uv"
+    script_rel = f"{SCRIPTS_SUBDIR}/train.py"
+
+    if multi_gpu:
+        # CLAUDE-NOTE: Accelerate configs live at
+        # packages/ltx-trainer/configs/accelerate/<name>.yaml. Four options:
+        # ddp, ddp_compile, fsdp, fsdp_compile. We pass the path relative to
+        # the LTX-2 repo root since `uv run` sets that as cwd.
+        accel_config = (
+            f"packages/ltx-trainer/configs/accelerate/{accelerate_config}.yaml"
+        )
+        cmd = [
+            uv, "run", "accelerate", "launch",
+            "--config_file", accel_config,
+            script_rel, config_abs,
+        ]
+    else:
+        cmd = [uv, "run", "python", script_rel, config_abs]
+
+    if extra_args.strip():
+        cmd.extend(extra_args.split())
+
+    yield from stream_command(cmd, root)
+
+
+def list_checkpoints(output_dir: str) -> list[dict[str, object]]:
+    """List .safetensors files under `output_dir`, newest first.
+
+    Returns entries like `{"path": str, "size_mb": float, "mtime": float}`.
+    Used by the Train tab's checkpoint browser.
+    """
+    out = Path(resolve_path(output_dir)) if output_dir else None
+    if not out or not out.is_dir():
+        return []
+    results: list[dict[str, object]] = []
+    for p in out.rglob("*.safetensors"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        results.append(
+            {
+                "path": str(p),
+                "size_mb": round(st.st_size / (1024 * 1024), 1),
+                "mtime": st.st_mtime,
+            },
+        )
+    results.sort(key=lambda r: r["mtime"], reverse=True)
+    return results
+
+
 def run_process_dataset(
     settings: Settings,
     dataset_json: str,

@@ -7,7 +7,7 @@ TODO (incremental build plan):
       with streaming subprocess output
   [x] Config tab — YAML template loader + structured editor +
       raw YAML textarea
-  [ ] Train tab — launch train.py, stream logs, checkpoint browser
+  [x] Train tab — launch train.py, stream logs, checkpoint browser
   [ ] Generate tab — ltx-pipelines inference with LoRA
   [x] Settings tab — paths + Check Installation + HF token
 
@@ -391,6 +391,47 @@ def config_save_fn(yaml_text: str, out_path: str) -> str:
 
 
 # =============================================================================
+# Train tab
+# =============================================================================
+
+
+def train_fn(config_path: str, multi_gpu: bool, accelerate_config: str, extra_args: str):
+    if not config_path.strip():
+        yield "Please provide a config YAML path.", None
+        return
+    s = settings_mod.load()
+    yield from _stream_with_state(
+        runner.run_train(
+            s,
+            config_path=config_path,
+            multi_gpu=multi_gpu,
+            accelerate_config=accelerate_config,
+            extra_args=extra_args,
+        ),
+    )
+
+
+def list_checkpoints_fn() -> str:
+    """Return a markdown table of checkpoints under the current output_dir."""
+    s = settings_mod.load()
+    entries = runner.list_checkpoints(s.output_dir)
+    if not entries:
+        return (
+            f"_No `.safetensors` files under `{s.output_dir}` yet._\n\n"
+            "Checkpoints appear here once training writes them "
+            "(every `checkpoints.interval` steps)."
+        )
+    import datetime as _dt  # local import; used nowhere else
+    header = "| File | Size (MB) | Modified |\n|---|---:|---|\n"
+    rows = []
+    for e in entries[:50]:  # CLAUDE-NOTE: cap at 50 to keep the markdown render fast
+        ts = _dt.datetime.fromtimestamp(e["mtime"]).strftime("%Y-%m-%d %H:%M")  # noqa: DTZ006
+        rows.append(f"| `{e['path']}` | {e['size_mb']:.1f} | {ts} |")
+    suffix = f"\n\n_Showing newest 50 of {len(entries)}._" if len(entries) > 50 else ""
+    return header + "\n".join(rows) + suffix
+
+
+# =============================================================================
 # Check Installation (Settings tab)
 # =============================================================================
 
@@ -683,6 +724,90 @@ def _dataset_prep_tab(default_output_dir: str) -> None:
         pd_cancel.click(fn=cancel_fn, inputs=[pd_proc], outputs=[pd_log])
 
 
+def _train_tab() -> dict:
+    """Build the Train tab."""
+    hw = get_hardware_info()
+    if hw.get("training_supported_natively") is False:
+        gr.Markdown(
+            "### ⚠️ This OS cannot run LTX-2 training natively\n\n"
+            f"You're on **{hw.get('os', '?')}**. The trainer depends on "
+            "`triton` and `bitsandbytes`, which are Linux-only. If you "
+            "click **Run** below on this machine, `train.py` will fail at "
+            "import time.\n\n"
+            "**To actually train**, switch to:\n"
+            "- **WSL2** on the same box (recommended — GPU passthrough works for the RTX 6000 Ada), or\n"
+            "- A Linux host (local or cloud).\n\n"
+            "The Config tab is still fully useful here — author your YAML "
+            "on Windows, push it to the Linux box, and run training there."
+        )
+    else:
+        gr.Markdown(
+            "Launch training. Streams the live log from "
+            "`uv run python packages/ltx-trainer/scripts/train.py <config>` "
+            "(or `accelerate launch` for multi-GPU). Checkpoints land in "
+            "whatever `output_dir` the config specifies.",
+        )
+
+    config_path = gr.Textbox(
+        label="Config YAML path",
+        placeholder="e.g. outputs/../configs/my_training.yaml (from the Config tab)",
+    )
+
+    with gr.Row():
+        multi_gpu = gr.Checkbox(label="Multi-GPU (accelerate launch)", value=False)
+        accelerate_config = gr.Dropdown(
+            label="Accelerate config",
+            choices=["ddp", "ddp_compile", "fsdp", "fsdp_compile"],
+            value="ddp",
+            info="ddp=standard, fsdp=parameter sharding, *_compile adds torch.compile.",
+            interactive=False,
+        )
+    extra_args = gr.Textbox(
+        label="Extra args (space-separated, advanced)",
+        placeholder="e.g. --some-override value",
+    )
+
+    # CLAUDE-NOTE: Enable the accelerate config dropdown only when Multi-GPU
+    # is checked. Keeps the UI from implying it matters in single-GPU mode.
+    multi_gpu.change(
+        fn=lambda mg: gr.update(interactive=bool(mg)),
+        inputs=[multi_gpu],
+        outputs=[accelerate_config],
+    )
+
+    with gr.Row():
+        run_btn = gr.Button("▶️ Run training", variant="primary")
+        cancel_btn = gr.Button("■ Cancel")
+
+    log_box = gr.Textbox(
+        label="Training log",
+        lines=24,
+        max_lines=80,
+        interactive=False,
+    )
+    proc_state = gr.State(None)
+
+    gr.Markdown("---\n### Checkpoints")
+    with gr.Row():
+        refresh_btn = gr.Button("🔄 Refresh checkpoint list")
+    ckpt_table = gr.Markdown(
+        "_Click refresh after training writes a checkpoint._",
+    )
+
+    run_btn.click(
+        fn=train_fn,
+        inputs=[config_path, multi_gpu, accelerate_config, extra_args],
+        outputs=[log_box, proc_state],
+    )
+    cancel_btn.click(fn=cancel_fn, inputs=[proc_state], outputs=[log_box])
+    refresh_btn.click(fn=list_checkpoints_fn, inputs=[], outputs=[ckpt_table])
+
+    return {
+        "config_path": config_path,
+        "log_box": log_box,
+    }
+
+
 def _config_tab(initial: dict) -> dict:
     """Build the Config tab. Returns a dict of handles the builder wires up."""
     gr.Markdown(
@@ -898,7 +1023,7 @@ def build_ui() -> gr.Blocks:
                 cfg = _config_tab(initial)
 
             with gr.Tab("Train"):
-                gr.Markdown("*Coming after Config.*")
+                _train_tab()
 
             with gr.Tab("Generate"):
                 gr.Markdown("*Coming last.*")
