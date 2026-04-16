@@ -246,6 +246,109 @@ def run_train(
     yield from stream_command(cmd, root)
 
 
+PIPELINES_TWO_STAGE = {"ti2vid_two_stages", "ti2vid_two_stages_hq", "ic_lora"}
+PIPELINES_SINGLE_STAGE = {"ti2vid_one_stage", "distilled", "a2vid_two_stage",
+                         "keyframe_interpolation", "retake"}
+ALL_PIPELINES = sorted(PIPELINES_TWO_STAGE | PIPELINES_SINGLE_STAGE)
+
+
+def run_generate(
+    settings: Settings,
+    pipeline: str,
+    prompt: str,
+    output_path: str,
+    *,
+    negative_prompt: str = "",
+    lora_path: str = "",
+    lora_multiplier: float = 1.0,
+    width: int = 0,
+    height: int = 0,
+    num_frames: int = 0,
+    frame_rate: float = 0.0,
+    num_inference_steps: int = 0,
+    seed: int = -1,
+    quantization: str = "",
+    extra_args: str = "",
+) -> Iterator[tuple[str, subprocess.Popen | None]]:
+    """Run one of the ltx-pipelines via `uv run python -m ltx_pipelines.<name>`.
+
+    Paths for the checkpoint, text encoder, spatial upsampler, and distilled
+    LoRA are pulled from Settings (Project tab) automatically.
+    """
+    root = _ltx_root(settings)
+    if pipeline not in ALL_PIPELINES:
+        raise RunnerError(f"Unknown pipeline: {pipeline!r}. Choose from {ALL_PIPELINES}")
+    if not prompt.strip():
+        raise RunnerError("Prompt is required.")
+    if not output_path.strip():
+        raise RunnerError("Output path is required.")
+
+    for label, path in [
+        ("model_path", settings.model_path),
+        ("text_encoder_path", settings.text_encoder_path),
+    ]:
+        if not path:
+            raise RunnerError(f"{label} not set — configure it in the Project tab.")
+
+    if pipeline in PIPELINES_TWO_STAGE:
+        for label, path in [
+            ("spatial_upscaler_path", settings.spatial_upscaler_path),
+            ("distilled_lora_path", settings.distilled_lora_path),
+        ]:
+            if not path:
+                raise RunnerError(
+                    f"{label} not set — the two-stage pipeline {pipeline!r} needs it. "
+                    "Configure it in the Project tab.",
+                )
+
+    uv = settings.uv_path or "uv"
+    cmd: list[str] = [
+        uv, "run", "python", "-m", f"ltx_pipelines.{pipeline}",
+        "--prompt", prompt,
+        "--output-path", resolve_path(output_path),
+        "--gemma-root", resolve_path(settings.text_encoder_path),
+    ]
+
+    # CLAUDE-NOTE: `distilled` pipeline takes --distilled-checkpoint-path
+    # (the distilled model itself is the only checkpoint). All other
+    # pipelines take --checkpoint-path (the regular LTX-2 model) and the
+    # two-stage family additionally takes --distilled-lora for stage 2.
+    if pipeline == "distilled":
+        cmd += ["--distilled-checkpoint-path", resolve_path(settings.model_path)]
+    else:
+        cmd += ["--checkpoint-path", resolve_path(settings.model_path)]
+
+    if pipeline in PIPELINES_TWO_STAGE:
+        cmd += [
+            "--spatial-upsampler-path", resolve_path(settings.spatial_upscaler_path),
+            "--distilled-lora", resolve_path(settings.distilled_lora_path), "0.8",
+        ]
+
+    if negative_prompt.strip():
+        cmd += ["--negative-prompt", negative_prompt]
+    if lora_path.strip():
+        cmd += ["--lora", resolve_path(lora_path), str(lora_multiplier)]
+    if width > 0:
+        cmd += ["--width", str(width)]
+    if height > 0:
+        cmd += ["--height", str(height)]
+    if num_frames > 0:
+        cmd += ["--num-frames", str(num_frames)]
+    if frame_rate > 0:
+        cmd += ["--frame-rate", str(frame_rate)]
+    if num_inference_steps > 0 and pipeline != "distilled":
+        # distilled pipeline has a fixed step schedule, no --num-inference-steps.
+        cmd += ["--num-inference-steps", str(num_inference_steps)]
+    if seed >= 0:
+        cmd += ["--seed", str(seed)]
+    if quantization and quantization != "none":
+        cmd += ["--quantization", quantization]
+    if extra_args.strip():
+        cmd.extend(extra_args.split())
+
+    yield from stream_command(cmd, root)
+
+
 def list_checkpoints(output_dir: str) -> list[dict[str, object]]:
     """List .safetensors files under `output_dir`, newest first.
 

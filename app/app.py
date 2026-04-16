@@ -8,7 +8,7 @@ TODO (incremental build plan):
   [x] Config tab — YAML template loader + structured editor +
       raw YAML textarea
   [x] Train tab — launch train.py, stream logs, checkpoint browser
-  [ ] Generate tab — ltx-pipelines inference with LoRA
+  [x] Generate tab — ltx-pipelines inference with LoRA
   [x] Settings tab — paths + Check Installation + HF token
 
 Runs as a standalone Python program. Accepts --host and --port.
@@ -411,6 +411,60 @@ def train_fn(config_path: str, multi_gpu: bool, accelerate_config: str, extra_ar
     )
 
 
+def generate_fn(
+    pipeline: str,
+    prompt: str,
+    negative_prompt: str,
+    output_path: str,
+    lora_path: str,
+    lora_multiplier: float,
+    width: int,
+    height: int,
+    num_frames: int,
+    frame_rate: float,
+    num_inference_steps: int,
+    seed: int,
+    quantization: str,
+    extra_args: str,
+):
+    """Stream log + emit the output video path once it exists on disk."""
+    s = settings_mod.load()
+    proc = None
+    final_log = ""
+    try:
+        for log, handle in runner.run_generate(
+            s,
+            pipeline=pipeline,
+            prompt=prompt,
+            output_path=output_path,
+            negative_prompt=negative_prompt,
+            lora_path=lora_path,
+            lora_multiplier=lora_multiplier,
+            width=int(width) if width else 0,
+            height=int(height) if height else 0,
+            num_frames=int(num_frames) if num_frames else 0,
+            frame_rate=float(frame_rate) if frame_rate else 0.0,
+            num_inference_steps=int(num_inference_steps) if num_inference_steps else 0,
+            seed=int(seed) if seed is not None else -1,
+            quantization=quantization,
+            extra_args=extra_args,
+        ):
+            if handle is not None:
+                proc = handle
+            final_log = log
+            yield log, proc, None
+    except runner.RunnerError as exc:
+        yield f"[runner error] {exc}\n", proc, None
+        return
+
+    # CLAUDE-NOTE: After the subprocess exits, check if the output mp4
+    # landed. Only return a path if it exists — avoids Gradio trying to
+    # load a missing file.
+    out_path = settings_mod.resolve_path(output_path) if output_path.strip() else ""
+    video_result = out_path if out_path and Path(out_path).exists() else None
+    yield final_log, proc, video_result
+
+
 def list_checkpoints_fn() -> str:
     """Return a markdown table of checkpoints under the current output_dir."""
     s = settings_mod.load()
@@ -724,6 +778,107 @@ def _dataset_prep_tab(default_output_dir: str) -> None:
         pd_cancel.click(fn=cancel_fn, inputs=[pd_proc], outputs=[pd_log])
 
 
+def _generate_tab(initial: dict) -> None:
+    gr.Markdown(
+        "Generate video from a trained checkpoint using the "
+        "`ltx-pipelines` package (the same production-grade inference "
+        "code LTX-2 ships). Paths for the base model, text encoder, "
+        "spatial upsampler, and distilled LoRA come from the Project "
+        "tab — two-stage pipelines need all four."
+    )
+
+    with gr.Row():
+        pipeline = gr.Dropdown(
+            label="Pipeline",
+            choices=runner.ALL_PIPELINES,
+            value="ti2vid_two_stages",
+            info="ti2vid_two_stages is the recommended starting point. "
+                 "distilled is fastest (8 steps). ic_lora = video-to-video "
+                 "with an IC-LoRA you trained.",
+        )
+
+    prompt = gr.Textbox(
+        label="Prompt",
+        placeholder="A slow pan across a neon-lit street at night, steam rising from a manhole, …",
+        lines=3,
+    )
+    negative_prompt = gr.Textbox(
+        label="Negative prompt (optional)",
+        value="worst quality, inconsistent motion, blurry, jittery, distorted",
+        lines=2,
+    )
+
+    default_output = str(Path(initial["output_dir"]) / "generated.mp4")
+    output_path = gr.Textbox(
+        label="Output video path (.mp4)",
+        value=default_output,
+    )
+
+    with gr.Accordion("Your trained LoRA (optional)", open=True):
+        with gr.Row():
+            lora_path = gr.Textbox(
+                label="LoRA path (.safetensors)",
+                placeholder="app/outputs/my_run/lora_weights.safetensors",
+            )
+            lora_multiplier = gr.Slider(
+                label="LoRA strength",
+                minimum=0.0, maximum=2.0, step=0.05, value=1.0,
+            )
+
+    with gr.Accordion("Resolution / timing / sampling", open=True):
+        with gr.Row():
+            width = gr.Number(label="Width (0 = pipeline default)", value=0, precision=0)
+            height = gr.Number(label="Height (0 = default)", value=0, precision=0)
+            num_frames = gr.Number(label="Num frames (0 = default)", value=0, precision=0)
+            frame_rate = gr.Number(label="Frame rate (0 = default)", value=0)
+        with gr.Row():
+            num_inference_steps = gr.Number(
+                label="Inference steps (0 = default, ignored for distilled)",
+                value=0, precision=0,
+            )
+            seed = gr.Number(label="Seed (-1 = random)", value=42, precision=0)
+            quantization = gr.Dropdown(
+                label="Runtime quantization",
+                choices=["none", "fp8-cast", "int8-cast"],
+                value="none",
+                info="Lower VRAM at small quality cost. Must match what the model supports.",
+            )
+
+    extra_args = gr.Textbox(
+        label="Extra args (space-separated, advanced)",
+        placeholder="--enhance-prompt --images path/to/first_frame.png",
+    )
+
+    with gr.Row():
+        gen_btn = gr.Button("🎬 Generate", variant="primary")
+        gen_cancel = gr.Button("■ Cancel")
+
+    log_box = gr.Textbox(
+        label="Inference log",
+        lines=18,
+        max_lines=50,
+        interactive=False,
+    )
+    proc_state = gr.State(None)
+    # CLAUDE-NOTE: gr.Video accepts a filesystem path; Gradio serves it back
+    # to the browser. It stays blank until the subprocess exits and the
+    # generator emits a real path.
+    video_out = gr.Video(label="Result", interactive=False)
+
+    gen_btn.click(
+        fn=generate_fn,
+        inputs=[
+            pipeline, prompt, negative_prompt, output_path,
+            lora_path, lora_multiplier,
+            width, height, num_frames, frame_rate,
+            num_inference_steps, seed, quantization,
+            extra_args,
+        ],
+        outputs=[log_box, proc_state, video_out],
+    )
+    gen_cancel.click(fn=cancel_fn, inputs=[proc_state], outputs=[log_box])
+
+
 def _train_tab() -> dict:
     """Build the Train tab."""
     hw = get_hardware_info()
@@ -1026,7 +1181,7 @@ def build_ui() -> gr.Blocks:
                 _train_tab()
 
             with gr.Tab("Generate"):
-                gr.Markdown("*Coming last.*")
+                _generate_tab(initial)
 
             with gr.Tab("Settings"):
                 hf_token, uv_path, python_path, settings_save_btn, settings_save_status = _settings_tab(initial)
