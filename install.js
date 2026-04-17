@@ -61,12 +61,16 @@ module.exports = {
     },
 
     // Phase 3: uv sync in LTX-2.
+    // CLAUDE-NOTE: Pin to --python 3.12. sentencepiece==0.2.0 (a transitive dep)
+    //   has no pre-built Windows wheel for Python 3.13 and fails to compile from
+    //   source because its CMakeLists.txt is incompatible with modern CMake (>3.5
+    //   policy removed). Python 3.12 has binary wheels for all deps. (2026-04-17)
     {
       method: "shell.run",
       params: {
         path: "../LTX-2",
         message: [
-          "uv sync",
+          "uv sync --python 3.12",
         ],
       },
     },
