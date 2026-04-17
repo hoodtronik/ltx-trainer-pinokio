@@ -383,37 +383,109 @@ def run_hf_download(
     *,
     hf_token: str = "",
 ) -> Iterator[tuple[str, subprocess.Popen | None]]:
-    """Download a single file from HuggingFace Hub via huggingface-cli.
+    """Download a single file (or whole repo) from HuggingFace Hub.
 
-    CLAUDE-NOTE: We call `huggingface-cli download` directly rather than the
-    Python API so the user gets a live progress stream in the log box. The
-    CLI prints download speed and ETA to stdout, which stream_command captures.
-    cwd is set to the app/ directory (one level up from where runner.py lives)
-    so relative local_dir paths resolve sensibly.
+    CLAUDE-NOTE: We use the Python huggingface_hub API via a subprocess so we
+    can import it with the correct venv Python without pulling it into the
+    Gradio process. We write a small inline Python script that downloads and
+    prints progress lines — one line every 512 MB — so stream_command can
+    relay them to the Gradio log box.
+
+    Why not `hf download` CLI: the `hf` binary uses Rich with \\r carriage-
+    return progress updates that never write newlines, so our line-reader never
+    sees any output until the subprocess exits (useless for a 40 GB file).
     """
-    uv = settings.uv_path or "uv"
-
-    # Ensure huggingface_hub[cli] is present in the venv before trying to
-    # invoke the CLI. This is idempotent (uv pip is fast when already installed).
-    env: dict[str, str] = {}
-    if hf_token.strip():
-        env["HF_TOKEN"] = hf_token.strip()
-    env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-
-    # Use Path(__file__).parent as cwd so relative local_dir paths like
-    # "app/models/..." resolve from the launcher root, not from ltx-repo.
+    token_arg = f'token="{hf_token.strip()}"' if hf_token.strip() else "token=None"
     cwd = Path(__file__).parent
 
-    cmd = [
-        "hf", "download",
-        repo_id,
-    ]
-    # CLAUDE-NOTE: Omit filename for whole-repo downloads (e.g. Gemma).
-    # huggingface-cli treats a missing filename as "download entire repo".
     if filename.strip():
-        cmd.append(filename)
-    cmd += ["--local-dir", local_dir]
-    yield from stream_command(cmd, cwd, env=env or None)
+        # Single-file download with manual progress reporting every 512 MB.
+        # CLAUDE-NOTE: hf_hub_download() and snapshot_download() are silent
+        # until completion; they use tqdm internally which writes \r updates.
+        # To get live lines in the Gradio log we use the HF Hub's internal
+        # URL resolution then download via requests with a manual read loop
+        # that prints a progress line every CHUNK bytes.
+        script = f"""
+import sys, os, time, requests
+from pathlib import Path
+from huggingface_hub import hf_hub_url, HfApi
+
+repo_id   = {repo_id!r}
+filename  = {filename!r}
+local_dir = Path({local_dir!r})
+token     = ({hf_token.strip()!r}) or None
+chunk     = 512 * 1024 * 1024  # report every 512 MB
+
+local_dir.mkdir(parents=True, exist_ok=True)
+dest = local_dir / Path(filename).name
+
+url = hf_hub_url(repo_id=repo_id, filename=filename)
+headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
+print(f"Connecting to HuggingFace for {{filename}} ...", flush=True)
+
+with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+    r.raise_for_status()
+    total = int(r.headers.get("content-length", 0))
+    total_gb = total / (1024**3) if total else 0
+    print(f"File size: {{total_gb:.2f}} GB  |  dest: {{dest}}", flush=True)
+    downloaded = 0
+    next_report = chunk
+    start = time.time()
+    with open(dest, "wb") as f:
+        for data in r.iter_content(chunk_size=8*1024*1024):
+            f.write(data)
+            downloaded += len(data)
+            if downloaded >= next_report:
+                elapsed = time.time() - start
+                pct = (downloaded / total * 100) if total else 0
+                speed = downloaded / elapsed / (1024**2)
+                print(f"  {{downloaded/(1024**3):.2f}} / {{total_gb:.2f}} GB  ({{pct:.1f}}%)  {{speed:.1f}} MB/s", flush=True)
+                next_report += chunk
+
+elapsed = time.time() - start
+print(f"Done. {{downloaded/(1024**3):.2f}} GB downloaded in {{elapsed:.0f}}s  ->  {{dest}}", flush=True)
+"""
+    else:
+        # Whole-repo download — use snapshot_download (no good way to stream
+        # individual file progress, but at least print start/done).
+        script = f"""
+import sys, os, time
+from pathlib import Path
+from huggingface_hub import snapshot_download
+
+repo_id   = {repo_id!r}
+local_dir = {local_dir!r}
+token     = ({hf_token.strip()!r}) or None
+
+Path(local_dir).mkdir(parents=True, exist_ok=True)
+print(f"Starting snapshot download of {{repo_id}} ...", flush=True)
+print("(This may appear frozen \u2014 large repos take time to enumerate.)", flush=True)
+start = time.time()
+
+dest = snapshot_download(
+    repo_id=repo_id,
+    local_dir=local_dir,
+    token=token,
+)
+
+elapsed = time.time() - start
+print(f"Done. Repo snapshot saved in {{elapsed:.0f}}s  ->  {{dest}}", flush=True)
+"""
+
+    # CLAUDE-NOTE: Run via the venv Python so huggingface_hub resolves from
+    # the installed packages. We inline the script via -c to avoid creating
+    # a temp file on disk.
+    # stderr=STDOUT so any huggingface_hub warnings appear in the log too.
+    py = Path(__file__).parent.parent / "env" / "Scripts" / "python.exe"
+    if not py.exists():
+        py = Path(__file__).parent.parent / "env" / "bin" / "python"
+
+    env: dict[str, str] = {"HF_HUB_ENABLE_HF_TRANSFER": "1"}
+    if hf_token.strip():
+        env["HF_TOKEN"] = hf_token.strip()
+
+    cmd = [str(py), "-c", script.strip()]
+    yield from stream_command(cmd, cwd, env=env)
 
 
 def run_process_dataset(
