@@ -1,14 +1,15 @@
-// CLAUDE-NOTE: Install flow — four distinct phases:
-//   1. Prereq check (uv, git). Install uv via Pinokio's shell if missing.
-//   2. Resolve LTX-Video repo location: default ../LTX-2 relative to this repo
-//      (cloned under the alias LTX-2 to keep all path refs consistent).
-//      Clone if absent. User can override later in Settings tab.
-//   3. `uv sync` inside the LTX-2 repo root (pyproject.toml is at repo root).
-//   4. Create a separate Gradio UI venv at env/ and install the UI deps from
-//      app/requirements.txt. Kept separate so Gradio's dep tree never
-//      conflicts with the trainer's pinned torch/triton/etc.
-// FIX (2026-04-17): repo was previously cloned as LTX-2.git which does not
-//   exist; the real repo is github.com/Lightricks/LTX-Video-Trainer.
+// CLAUDE-NOTE: Install flow — five phases:
+//   1. Prereq check (uv, git).
+//   2. Clone the LTX-2 monorepo into app/LTX-2/ (training code, ~50 MB).
+//      - If app/LTX-2/ exists but is missing packages/ (wrong repo or empty),
+//        rename it to app/LTX-2-backup/ to preserve any user data.
+//      - If packages/ltx-trainer/ already exists, skip clone (idempotent).
+//   3. `uv sync` inside app/LTX-2 (monorepo's own venv, separate from UI venv).
+//   4. Create a separate Gradio UI venv at env/ and install the UI deps.
+//   5. GPU detection.
+//
+// Repo: https://github.com/Lightricks/LTX-2 (monorepo — trainer + pipelines + core)
+// Models live separately in app/models/ and are never touched by this script.
 
 module.exports = {
   run: [
@@ -22,8 +23,8 @@ module.exports = {
           "",
           "This will:",
           "  1. Verify uv + git are available (install uv if missing)",
-          "  2. Locate or clone LTX-Video-Trainer (as ../LTX-2) from github.com/Lightricks/LTX-Video-Trainer",
-          "  3. Run `uv sync` inside LTX-2/ (pyproject.toml is at repo root)",
+          "  2. Clone LTX-2 monorepo into app/LTX-2/ from github.com/Lightricks/LTX-2",
+          "  3. Run `uv sync` inside app/LTX-2/ (monorepo's own venv)",
           "  4. Create a separate Gradio UI venv at env/",
           "",
           "NOTE: LTX-2 training requires Linux (triton + bitsandbytes).",
@@ -45,22 +46,24 @@ module.exports = {
       },
     },
 
-    // Phase 2: resolve or clone LTX-Video-Trainer into the sibling folder LTX-2.
-    // CLAUDE-NOTE: The actual GitHub repo is Lightricks/LTX-Video-Trainer (not LTX-2).
-    //   We clone it into the alias folder "LTX-2" so that all subsequent
-    //   path references (../LTX-2) remain consistent.
-    //   The pyproject.toml lives at the repo root, so `uv sync ../LTX-2` works.
+    // Phase 2: clone the LTX-2 monorepo into app/LTX-2/.
+    // CLAUDE-NOTE: If app/LTX-2/ exists but doesn't contain packages/ (wrong repo
+    //   or a previously failed clone), rename it to app/LTX-2-backup/ to preserve
+    //   any files that might be there, then proceed with a fresh clone.
+    //   Use --depth 1 for fast initial checkout — full history isn't needed for training.
     {
       method: "shell.run",
       params: {
-        path: "..",
         message: [
-          "{{fs.existsSync(path.join(__dirname, '..', 'LTX-2')) ? \"echo 'Found existing LTX-2 at ../LTX-2 — skipping clone.'\" : \"git clone https://github.com/Lightricks/LTX-Video-Trainer.git LTX-2\"}}",
+          // Step A: backup bad directory if it exists without the monorepo structure
+          "{{(fs.existsSync(path.join(__dirname, 'app', 'LTX-2')) && !fs.existsSync(path.join(__dirname, 'app', 'LTX-2', 'packages'))) ? (platform === 'win32' ? 'move app\\\\LTX-2 app\\\\LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup' : 'mv app/LTX-2 app/LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup') : 'echo ok'}}",
+          // Step B: clone only if packages/ not already there
+          "{{fs.existsSync(path.join(__dirname, 'app', 'LTX-2', 'packages')) ? \"echo 'LTX-2 monorepo already installed at app/LTX-2 — skipping clone.'\" : \"git clone --depth 1 https://github.com/Lightricks/LTX-2.git app/LTX-2\"}}",
         ],
       },
     },
 
-    // Phase 3: uv sync in LTX-2.
+    // Phase 3: uv sync inside the monorepo (its own venv, separate from the UI venv).
     // CLAUDE-NOTE: Pin to --python 3.12. sentencepiece==0.2.0 (a transitive dep)
     //   has no pre-built Windows wheel for Python 3.13 and fails to compile from
     //   source because its CMakeLists.txt is incompatible with modern CMake (>3.5
@@ -68,7 +71,7 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        path: "../LTX-2",
+        path: "app/LTX-2",
         message: [
           "uv sync --python 3.12",
         ],

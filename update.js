@@ -28,14 +28,17 @@ module.exports = {
       },
     },
 
-    // Update LTX-2 trainer repo.
+    // Update LTX-2 monorepo (app/LTX-2) and re-sync its venv.
+    // CLAUDE-NOTE: Use reset --hard like the launcher update above so a dirty
+    // working tree (e.g. from a failed previous sync) never blocks the pull.
     {
       method: "shell.run",
       params: {
-        path: "../LTX-2",
+        path: "app/LTX-2",
         message: [
-          "git pull",
-          "uv sync",
+          "git fetch origin",
+          "git reset --hard origin/main",
+          "uv sync --frozen",
         ],
       },
     },

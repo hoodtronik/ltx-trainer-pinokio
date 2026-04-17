@@ -22,8 +22,8 @@ SETTINGS_PATH = REPO_ROOT / "app" / ".user_settings.json"
 
 
 def _default_ltx_repo_path() -> str:
-    """Default to the sibling `../LTX-2` directory (where install.js clones it)."""
-    return str((REPO_ROOT.parent / "LTX-2").resolve())
+    """Default to app/LTX-2/ (where install.js clones the monorepo)."""
+    return str((REPO_ROOT / "app" / "LTX-2").resolve())
 
 
 def _default_output_dir() -> str:

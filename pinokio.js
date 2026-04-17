@@ -22,6 +22,7 @@ module.exports = {
     const updateRunning = info.running("update.js");
     const downloadRunning = info.running("download_models.js");
     const resetRunning = info.running("reset.js");
+    const reinstallCodeRunning = info.running("reinstall_ltx2.js");
 
     if (installRunning) {
       return [{ default: true, icon: "fa-solid fa-plug", text: "Installing…", href: "install.js" }];
@@ -34,6 +35,9 @@ module.exports = {
     }
     if (resetRunning) {
       return [{ default: true, icon: "fa-solid fa-eraser", text: "Resetting…", href: "reset.js" }];
+    }
+    if (reinstallCodeRunning) {
+      return [{ default: true, icon: "fa-solid fa-code", text: "Reinstalling LTX-2 code…", href: "reinstall_ltx2.js" }];
     }
 
     if (!installed) {
@@ -64,7 +68,8 @@ module.exports = {
       { icon: "fa-solid fa-terminal", text: "Terminal", href: "terminal.js" },
       { icon: "fa-solid fa-download", text: "Download Models", href: "download_models.js" },
       { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
-      { icon: "fa-solid fa-plug", text: "Re-install", href: "install.js" },
+      { icon: "fa-solid fa-code", text: "Reinstall LTX-2 Code", href: "reinstall_ltx2.js" },
+      { icon: "fa-solid fa-plug", text: "Re-install (full)", href: "install.js" },
       { icon: "fa-solid fa-eraser", text: "Reset (clean venvs)", href: "reset.js" },
     ];
   },

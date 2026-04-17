@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import gradio as gr
@@ -30,6 +31,12 @@ from hardware import get_hardware_info
 
 APP_TITLE = "LTX-Trainer"
 APP_SUBTITLE = "Gradio UI for the official LTX-2 video model trainer"
+
+# CLAUDE-NOTE: The LTX-2 monorepo is cloned here by install.js / reinstall_ltx2.js.
+# This is separate from the model weights directory (app/models/).
+_LTX_CODE_DIR = settings_mod.REPO_ROOT / "app" / "LTX-2"
+_LTX_MONOREPO_URL = "https://github.com/Lightricks/LTX-2.git"
+_LTX_TRAIN_SCRIPT = _LTX_CODE_DIR / "packages" / "ltx-trainer" / "scripts" / "train.py"
 
 # CLAUDE-NOTE: Full user-facing walkthrough rendered in the Directions tab.
 # Keep this in sync with the actual tab names and field names as the UI evolves.
@@ -491,6 +498,163 @@ def refresh_paths_fn() -> tuple[str, str, str, str]:
     return s.model_path, s.text_encoder_path, s.spatial_upscaler_path, s.distilled_lora_path
 
 
+# =============================================================================
+# Training-code install / update (app/LTX-2 monorepo)
+# =============================================================================
+
+
+def _code_status_md() -> str:
+    """One-line markdown showing whether the LTX-2 monorepo is installed."""
+    if _LTX_TRAIN_SCRIPT.exists():
+        return "✅ **Installed** — LTX-2 training code is ready."
+    if _LTX_CODE_DIR.is_dir():
+        return (
+            "⚠️ **Directory exists but is missing the trainer scripts.** "
+            "Click **Reinstall Training Code** below."
+        )
+    return "❌ **Not installed.** Click **Install Training Code** below (~50 MB)."
+
+
+def _stream_subproc(cmd: list[str], cwd: Path | None = None):
+    """Yield (accumulated_stdout_str, proc) from a subprocess. For Gradio generators."""
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        yield f"[error] '{cmd[0]}' not found — is it installed and on PATH?\n", None
+        return
+    out = ""
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        out += line
+        yield out, proc
+    proc.wait()
+    if proc.returncode != 0:
+        out += f"\n[process exited with code {proc.returncode}]\n"
+    yield out, proc
+
+
+def install_code_fn():
+    """Clone and sync the LTX-2 monorepo into app/LTX-2/. Streams output."""
+    s = settings_mod.load()
+    uv = s.uv_path or "uv"
+    log = ""
+
+    if _LTX_TRAIN_SCRIPT.exists():
+        log += "✅ LTX-2 training code is already installed. Nothing to do.\n"
+        yield log, None
+        return
+
+    # Rename bad directory (exists but no packages/) to avoid blocking clone.
+    if _LTX_CODE_DIR.is_dir() and not (_LTX_CODE_DIR / "packages").is_dir():
+        backup = _LTX_CODE_DIR.parent / "LTX-2-backup"
+        log += f"📦 Renaming existing {_LTX_CODE_DIR.name}/ → {backup.name}/ (preserving contents)…\n"
+        yield log, None
+        try:
+            _LTX_CODE_DIR.rename(backup)
+        except OSError as exc:
+            log += f"[error] Could not rename: {exc}\n"
+            yield log, None
+            return
+
+    if not _LTX_CODE_DIR.is_dir():
+        log += f"⬇️ Cloning LTX-2 monorepo (--depth 1)…\n$ git clone --depth 1 {_LTX_MONOREPO_URL} {_LTX_CODE_DIR}\n"
+        yield log, None
+        section, last_proc = "", None
+        for section, last_proc in _stream_subproc(
+            ["git", "clone", "--depth", "1", _LTX_MONOREPO_URL, str(_LTX_CODE_DIR)]
+        ):
+            yield log + section, last_proc
+        log += section
+        if not _LTX_CODE_DIR.is_dir():
+            log += "\n[error] Clone failed — directory not created. Check git output above.\n"
+            yield log, None
+            return
+
+    log += f"\n🔧 Running `uv sync --python 3.12` inside app/LTX-2/…\n"
+    yield log, None
+    section, last_proc = "", None
+    for section, last_proc in _stream_subproc([uv, "sync", "--python", "3.12"], cwd=_LTX_CODE_DIR):
+        yield log + section, last_proc
+    log += section
+
+    if _LTX_TRAIN_SCRIPT.exists():
+        log += "\n✅ LTX-2 training code installed successfully.\n"
+    else:
+        log += "\n⚠️ uv sync completed but train.py not found — check output above.\n"
+    yield log, None
+
+
+def update_code_fn():
+    """git pull + uv sync inside app/LTX-2/. Streams output."""
+    s = settings_mod.load()
+    uv = s.uv_path or "uv"
+    log = ""
+
+    if not _LTX_CODE_DIR.is_dir():
+        log += "❌ app/LTX-2/ not found. Click Install Training Code first.\n"
+        yield log, None
+        return
+
+    log += "🔄 Pulling latest LTX-2 code…\n"
+    yield log, None
+    section, last_proc = "", None
+    for section, last_proc in _stream_subproc(["git", "pull"], cwd=_LTX_CODE_DIR):
+        yield log + section, last_proc
+    log += section
+
+    log += "\n🔧 Re-syncing dependencies…\n"
+    yield log, None
+    section, last_proc = "", None
+    for section, last_proc in _stream_subproc([uv, "sync", "--frozen"], cwd=_LTX_CODE_DIR):
+        yield log + section, last_proc
+    log += section + "\n✅ LTX-2 code updated.\n"
+    yield log, None
+
+
+def check_code_status_fn() -> str:
+    """Return current code install status markdown (fast — file existence check only)."""
+    return _code_status_md()
+
+
+def download_all_fn(
+    hf_token: str,
+    dl_22b: bool,
+    dl_19b: bool,
+    dl_gemma: bool,
+    dl_upscaler: bool,
+    dl_distilled: bool,
+):
+    """Install code (if missing) then download all checked model weights. Sequential."""
+    full_log = ""
+
+    # Step 1: install code if needed
+    if not _LTX_TRAIN_SCRIPT.exists():
+        full_log += "=== Step 1: Install LTX-2 Training Code ===\n"
+        yield full_log, None
+        section, last_proc = "", None
+        for section, last_proc in install_code_fn():
+            yield full_log + section, last_proc
+        full_log += section + "\n"
+    else:
+        full_log += "=== Step 1: Training code already installed ✅ ===\n"
+        yield full_log, None
+
+    # Step 2: model weights
+    full_log += "\n=== Step 2: Download Model Weights ===\n"
+    yield full_log, None
+    section, last_proc = "", None
+    for section, last_proc in download_models_fn(hf_token, dl_22b, dl_19b, dl_gemma, dl_upscaler, dl_distilled):
+        yield full_log + section, last_proc
+
+
 def validate_paths_fn(
     model_path: str,
     text_encoder_path: str,
@@ -886,7 +1050,7 @@ def check_installation_fn() -> str:
             lines.append(f"- ✅ LTX-2 repo: `{ltx_root}`")
         else:
             lines.append(
-                f"- ⚠️  LTX-2 path exists but is not the monorepo: `{ltx_root}`",
+                f"- ⚠️  LTX-2 path exists but is not the monorepo: `{ltx_root}` — click **Reinstall LTX-2 Code** from the Pinokio menu, or use **Install Training Code** on the Download Models tab.",
             )
     else:
         lines.append(f"- ❌ LTX-2 repo not found: `{s.ltx_repo_path or '(unset)'}`")
@@ -1564,13 +1728,32 @@ def _directions_tab() -> None:
 
 
 def _download_models_tab():
-    """Build the Download Models tab. Returns dl_click_event for chaining .then() in build_ui."""
+    """Build the Download Models tab. Returns (dl_click_event, code_status_md, code_log, code_proc) for wiring."""
+    # --- Training Code section ---
+    gr.Markdown("### 🛠️ Training Code")
+    code_status_md = gr.Markdown(_code_status_md())
+    with gr.Row():
+        code_install_btn = gr.Button("📥 Install Training Code", variant="secondary")
+        code_update_btn = gr.Button("🔄 Update Training Code", variant="secondary")
+    code_log = gr.Textbox(
+        label="Code install / update log",
+        lines=10,
+        max_lines=30,
+        interactive=False,
+        visible=False,
+    )
+    code_proc = gr.State(None)
+
+    gr.Markdown("---")
+
+    # --- Model weights section ---
+    gr.Markdown("### ⬇️ Model Weights")
     gr.Markdown(
         "Download the LTX-2 model weights from HuggingFace. "
         "Select what you need and click **⬇️ Download**. "
         "Downloads are large — expect 1–4 hours on a typical connection.  \n\n"
         "**Tip:** If you already have the models on disk, use the "
-        "**📂 Use models from another app** section in the **Project** tab "
+        "**📂 Find models already on disk** section in the **Project** tab "
         "to scan for them instead of re-downloading."
     )
 
@@ -1631,7 +1814,10 @@ def _download_models_tab():
         outputs=[dl_log, dl_proc],
     )
     dl_cancel.click(fn=cancel_fn, inputs=[dl_proc], outputs=[dl_log])
-    return dl_click_event
+    # CLAUDE-NOTE: Return all wirable components so build_ui() can attach handlers
+    # outside the tab context. code_log visibility is toggled by the install/update
+    # buttons via .then() in build_ui().
+    return dl_click_event, code_status_md, code_install_btn, code_update_btn, code_log, code_proc
 
 
 def build_ui() -> gr.Blocks:
@@ -1650,7 +1836,7 @@ def build_ui() -> gr.Blocks:
                 _directions_tab()
 
             with gr.Tab("⬇️ Download Models"):
-                dl_click_event = _download_models_tab()
+                dl_click_event, code_status_md, code_install_btn, code_update_btn, code_log, code_proc = _download_models_tab()
 
             with gr.Tab("Project"):
                 project_fields, project_save_btn, project_save_status, proj_extras = _project_tab(initial)
@@ -1719,6 +1905,33 @@ def build_ui() -> gr.Blocks:
             fn=apply_scan_results_fn,
             inputs=[proj_extras["scan_state"]],
             outputs=[*_path_outputs, proj_extras["apply_status"]],
+        )
+
+        # ---------- Download Models tab — Training Code wiring ----------
+        # Show the log box when the user clicks either code button, then
+        # refresh the status markdown when the generator finishes.
+        code_install_btn.click(
+            fn=install_code_fn,
+            inputs=[],
+            outputs=[code_log, code_proc],
+        ).then(fn=check_code_status_fn, inputs=[], outputs=[code_status_md])
+        code_install_btn.click(
+            fn=lambda: gr.update(visible=True),
+            inputs=[],
+            outputs=[code_log],
+            queue=False,
+        )
+
+        code_update_btn.click(
+            fn=update_code_fn,
+            inputs=[],
+            outputs=[code_log, code_proc],
+        ).then(fn=check_code_status_fn, inputs=[], outputs=[code_status_md])
+        code_update_btn.click(
+            fn=lambda: gr.update(visible=True),
+            inputs=[],
+            outputs=[code_log],
+            queue=False,
         )
 
         # CLAUDE-NOTE: After the download generator finishes, auto-refresh the
