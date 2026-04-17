@@ -1,11 +1,14 @@
 // CLAUDE-NOTE: Install flow — four distinct phases:
 //   1. Prereq check (uv, git). Install uv via Pinokio's shell if missing.
-//   2. Resolve LTX-2 repo location: default ../LTX-2 relative to this repo,
-//      clone if absent. User can override later in Settings tab.
-//   3. `uv sync` inside the LTX-2 repo to install the trainer's deps.
+//   2. Resolve LTX-Video repo location: default ../LTX-2 relative to this repo
+//      (cloned under the alias LTX-2 to keep all path refs consistent).
+//      Clone if absent. User can override later in Settings tab.
+//   3. `uv sync` inside the LTX-2 repo root (pyproject.toml is at repo root).
 //   4. Create a separate Gradio UI venv at env/ and install the UI deps from
 //      app/requirements.txt. Kept separate so Gradio's dep tree never
 //      conflicts with the trainer's pinned torch/triton/etc.
+// FIX (2026-04-17): repo was previously cloned as LTX-2.git which does not
+//   exist; the real repo is github.com/Lightricks/LTX-Video.
 
 module.exports = {
   run: [
@@ -19,8 +22,8 @@ module.exports = {
           "",
           "This will:",
           "  1. Verify uv + git are available (install uv if missing)",
-          "  2. Locate or clone the LTX-2 trainer repo to ../LTX-2",
-          "  3. Run `uv sync` inside LTX-2/",
+          "  2. Locate or clone LTX-Video (as ../LTX-2) from github.com/Lightricks/LTX-Video",
+          "  3. Run `uv sync` inside LTX-2/ (pyproject.toml is at repo root)",
           "  4. Create a separate Gradio UI venv at env/",
           "",
           "NOTE: LTX-2 training requires Linux (triton + bitsandbytes).",
@@ -42,15 +45,17 @@ module.exports = {
       },
     },
 
-    // Phase 2: resolve or clone LTX-2.
-    // CLAUDE-NOTE: Clone into ../LTX-2 only if missing. The path is
-    // configurable in the UI's Settings tab; install defaults to sibling.
+    // Phase 2: resolve or clone LTX-Video into the sibling folder LTX-2.
+    // CLAUDE-NOTE: The actual GitHub repo is Lightricks/LTX-Video (not LTX-2).
+    //   We clone it into the alias folder "LTX-2" so that all subsequent
+    //   path references (../LTX-2) remain consistent.
+    //   The pyproject.toml lives at the repo root, so `uv sync ../LTX-2` works.
     {
       method: "shell.run",
       params: {
         path: "..",
         message: [
-          "{{fs.existsSync(path.join(__dirname, '..', 'LTX-2')) ? \"echo 'Found existing LTX-2 at ../LTX-2 — skipping clone.'\" : \"git clone https://github.com/Lightricks/LTX-2.git LTX-2\"}}",
+          "{{fs.existsSync(path.join(__dirname, '..', 'LTX-2')) ? \"echo 'Found existing LTX-2 at ../LTX-2 — skipping clone.'\" : \"git clone https://github.com/Lightricks/LTX-Video.git LTX-2\"}}",
         ],
       },
     },
