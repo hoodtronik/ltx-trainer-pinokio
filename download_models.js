@@ -1,11 +1,14 @@
-// CLAUDE-NOTE: Optional model download. Pulls the three main artifacts
+// CLAUDE-NOTE: Optional model download. Pulls the main artifacts
 // from HuggingFace into app/models/ using huggingface-cli (installed in
 // the UI venv so we don't need a second dep tree).
 //
-// Downloads are HUGE (~80 GB total). This is intentionally a separate menu
-// entry so the user opts in explicitly. Skippable — the Settings tab lets
-// the user point at any on-disk location (e.g. their existing quantized
-// wan2gp LTX-2.3 copy).
+// FIX (2026-04-17): removed `type: "select"` form field — that type is not
+// supported in this Pinokio version and silently prevented the Done button
+// from firing at all. Replaced with two checkboxes (one per model line).
+// User checks whichever variant they want; if both are checked, both download.
+//
+// Downloads are HUGE (~80 GB total for all items). Intentionally a separate
+// menu entry so the user opts in explicitly.
 
 module.exports = {
   run: [
@@ -15,28 +18,22 @@ module.exports = {
         title: "Download LTX-2.3 models from HuggingFace",
         description: [
           "LTX-2 has two current model lines:",
-          "  • LTX-2.3 (22B) — current release, default here",
+          "  • LTX-2.3 (22B) — current release, recommended",
           "  • LTX-2   (19B) — older, still supported by the trainer",
           "",
-          "This will download ~80 GB to app/models/. You can uncheck any",
-          "item, and you can pick the older 19B checkpoint instead of 22B",
-          "via the dropdown below.",
+          "Check the items you want to download (~80 GB total if all checked).",
+          "A HuggingFace token is required for Gemma (it is a gated model).",
           "",
-          "A HuggingFace token is required for Gemma (gated model).",
+          "Tip: Skip everything here if you already have the models on disk",
+          "— just update the paths in the Project tab instead.",
         ].join("\n"),
         form: [
           { key: "hf_token", type: "password", title: "HuggingFace token (required for Gemma)", default: "" },
-          {
-            key: "main_variant",
-            type: "select",
-            title: "Main checkpoint variant",
-            choices: ["ltx-2.3-22b (current)", "ltx-2-19b (legacy)"],
-            default: "ltx-2.3-22b (current)",
-          },
-          { key: "dl_main", type: "checkbox", title: "Main checkpoint (~40 GB)", default: true },
-          { key: "dl_gemma", type: "checkbox", title: "Gemma 3 12B text encoder (~24 GB)", default: true },
-          { key: "dl_upscaler", type: "checkbox", title: "Spatial upscaler (~2 GB) — inference only", default: true },
-          { key: "dl_distilled", type: "checkbox", title: "Distilled LoRA (~1 GB) — inference only", default: true },
+          { key: "dl_main_22b",   type: "checkbox", title: "Main checkpoint LTX-2.3 22B ★ recommended (~40 GB)", default: true },
+          { key: "dl_main_19b",   type: "checkbox", title: "Main checkpoint LTX-2 19B — older/legacy (~12 GB)", default: false },
+          { key: "dl_gemma",      type: "checkbox", title: "Gemma 3 12B text encoder — gated, needs HF token (~24 GB)", default: true },
+          { key: "dl_upscaler",   type: "checkbox", title: "Spatial upscaler x2 (~2 GB) — inference only", default: true },
+          { key: "dl_distilled",  type: "checkbox", title: "Distilled LoRA (~1 GB) — inference only (fast 8-step generation)", default: true },
         ],
       },
     },
@@ -53,10 +50,7 @@ module.exports = {
       },
     },
 
-    // Main LTX-2 checkpoint — dispatches to the selected variant.
-    // CLAUDE-NOTE: LTX-2.3 (22B) lives in the Lightricks/LTX-2.3 HF repo,
-    // LTX-2 (19B) lives in Lightricks/LTX-2. Both are supported by the
-    // same trainer; the user picks via the `main_variant` form field.
+    // LTX-2.3 22B checkpoint (recommended).
     {
       method: "shell.run",
       params: {
@@ -69,9 +63,10 @@ module.exports = {
           "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-dev.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
-      when: "{{input.dl_main && input.main_variant === 'ltx-2.3-22b (current)'}}",
+      when: "{{input.dl_main_22b}}",
     },
 
+    // LTX-2 19B checkpoint (legacy).
     {
       method: "shell.run",
       params: {
@@ -84,10 +79,10 @@ module.exports = {
           "huggingface-cli download Lightricks/LTX-2 ltx-2-19b-dev.safetensors --local-dir app/models/ltx-2",
         ],
       },
-      when: "{{input.dl_main && input.main_variant === 'ltx-2-19b (legacy)'}}",
+      when: "{{input.dl_main_19b}}",
     },
 
-    // Gemma text encoder.
+    // Gemma 3 12B text encoder (gated — needs HF token).
     {
       method: "shell.run",
       params: {
@@ -103,8 +98,7 @@ module.exports = {
       when: "{{input.dl_gemma}}",
     },
 
-    // Spatial upscaler (inference). Lives in the LTX-2.3 repo for both
-    // model lines — there's a single upscaler shared across versions.
+    // Spatial upscaler (shared across both model lines).
     {
       method: "shell.run",
       params: {
@@ -120,7 +114,7 @@ module.exports = {
       when: "{{input.dl_upscaler}}",
     },
 
-    // Distilled LoRA (inference, for two-stage pipelines).
+    // Distilled LoRA (for fast two-stage inference pipelines).
     {
       method: "shell.run",
       params: {
@@ -143,8 +137,8 @@ module.exports = {
           "",
           "✅ Model downloads complete (for all checked items).",
           "",
-          "Models are in app/models/. They will appear in the Settings tab's",
-          "path pickers automatically.",
+          "Models landed in app/models/. Update the paths in the",
+          "Project tab to point at them before training or generating.",
           "",
         ].join("\n"),
       },
