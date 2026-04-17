@@ -31,6 +31,150 @@ from hardware import get_hardware_info
 APP_TITLE = "LTX-Trainer"
 APP_SUBTITLE = "Gradio UI for the official LTX-2 video model trainer"
 
+# CLAUDE-NOTE: Full user-facing walkthrough rendered in the Directions tab.
+# Keep this in sync with the actual tab names and field names as the UI evolves.
+DIRECTIONS_MD = """
+## 🗺️ How to use LTX-Trainer — tab by tab
+
+This UI wraps the official [Lightricks LTX-Video-Trainer](https://github.com/Lightricks/LTX-Video-Trainer)
+to fine-tune the **LTX-2 video diffusion model** on your own footage.
+The full workflow is: **Project → Dataset Prep → Config → Train → Generate.**
+
+---
+
+### 1 · Project tab
+*Set up your paths once. Everything else reads from here.*
+
+| Field | What to put there |
+|---|---|
+| **LTX-2 repo path** | Path to the cloned `LTX-Video-Trainer` repo. Default `../LTX-2` works if installed via Pinokio. |
+| **Training output dir** | Where checkpoints and generated samples land. E.g. `app/outputs`. |
+| **Model checkpoint** | Your downloaded `ltx-2-19b-dev.safetensors` file. |
+| **Gemma text encoder** | The **directory** containing the Gemma-3 12B text encoder (not a single file). |
+| **Spatial upscaler** | Optional. Used only at inference for 2× resolution boost. |
+| **Distilled LoRA** | Optional. A pre-trained distilled LoRA for faster 8-step inference. |
+
+**Click 💾 Save paths** when done. Paths can be relative (resolved against the launcher root) or absolute.
+
+---
+
+### 2 · Dataset Prep tab
+*Prepare your video clips for training. Three steps — only Preprocess is required.*
+
+#### ① Scene split *(optional)*
+Splits a long source video into short per-scene clips. Skip this if you already have individual clips.
+- **Input video path** — your long source `.mp4`.
+- **Output directory** — where clips land (e.g. `app/data/scenes`).
+- **Detector** — `content` works for most footage; `adaptive` handles fast-cuts; `threshold` for static/timelapse.
+- **Filter shorter than** — drop clips below this duration (e.g. `3s`). Clips under ~2 s are usually unusable for training.
+- **Min scene length** — minimum frames (e.g. `24`). Ignored if empty.
+- **Detector threshold** — sensitivity; lower = more splits. Default (`27.0`) is usually fine.
+
+#### ② Caption videos *(optional but strongly recommended)*
+Auto-generates text captions for each clip. Captions become the training prompts.
+- **Input directory** — your clips folder (output of step ①, or your own folder).
+- **Output dataset JSON** — where the caption file lands (e.g. `app/data/dataset.json`).
+- **Captioner** — `qwen_omni` runs locally (needs ~20 GB VRAM); `gemini_flash` calls Google's API (fast, cheap, requires API key).
+- **API key** — required only for `gemini_flash`. Leave blank for local `qwen_omni`.
+- **Num workers** — parallel threads. `1`–`4` is safe; more workers need more VRAM.
+- **No audio** — tick if your clips have no meaningful audio, or to speed things up.
+- **Use 8-bit** — halves VRAM for `qwen_omni` at minor quality cost.
+- **Clean captions** — strips the `[VISUAL]`/`[SPEECH]` brackets from captions.
+
+> 💡 If you skip captioning, manually create `dataset.json` with `{"video_path": "...", "caption": "..."}` entries.
+
+#### ③ Preprocess *(REQUIRED)*
+Comp utes video **latents** (VAE-encoded) and **text embeddings** (Gemma-encoded). This is what `train.py` actually reads — training never touches raw video files.
+- **Dataset JSON** — the `.json` from step ②, or your hand-crafted one.
+- **Resolution buckets** — format `WxHxF` where W and H are multiples of 32, and F follows the sequence `1, 9, 17, 25, … 121`. Example: `960x544x49` (≈ 2 s at 24 fps). Chain multiple with `;`.
+- **With audio** — tick for joint audio-video training.
+- **VAE tiling** — lowers peak VRAM during encoding. Use if you get OOM here.
+- **Decode sanity check** — writes small preview `.mp4` files so you can verify the latents look correct before committing to a long training run.
+- **LoRA trigger** — an optional single word baked into every caption (e.g. `sks`). Use this to create a LoRA triggered by that token.
+
+---
+
+### 3 · Config tab
+*Author the training YAML. Change settings in the form, then Save.*
+
+1. **Pick a template** from the dropdown — `LoRA (standard)` is the right starting point for most users. Load it with **📥 Load template**.
+2. Tweak the form fields (see below). Click **🔄 Regenerate YAML** to update the raw YAML preview.
+3. Edit the raw **YAML box** directly for anything the form doesn't expose (wandb, STG, custom validation prompts).
+4. Click **🔍 Validate** to catch missing paths.
+5. Set the **Save config to** path and click **💾 Save config**.
+
+**Key form fields:**
+
+| Field | Guidance |
+|---|---|
+| **Training mode** | `lora` for LoRA (recommended, needs 24–48 GB). `full` for full fine-tune (needs 80 GB+). |
+| **Resume from checkpoint** | Path to a prior `.safetensors` checkpoint to continue training. Leave blank for a fresh run. |
+| **Rank / Alpha** | LoRA rank (complexity). `32` is a good default. Higher = more capacity but more VRAM. `alpha = rank` is standard. |
+| **Strategy** | `text_to_video` = standard LoRA. `video_to_video` = IC-LoRA (needs reference videos in dataset). |
+| **First-frame conditioning prob** | `0.5` = 50/50 text-to-video vs image-to-video conditioning. Push toward `1.0` for image-anchored results. |
+| **Learning rate** | `1e-4` is the standard starting point. Lower (`5e-5`) if the model collapses or overtrains. |
+| **Steps** | `500`–`2000` is typical for LoRA. More steps = more capacity, but also more overfit risk. |
+| **Batch size** | Keep at `1` unless you have 80 GB+ VRAM. |
+| **Gradient accumulation** | Simulates larger batch size without extra VRAM. `4`–`8` is common. |
+| **Optimizer** | `adamw8bit` saves ~75% optimizer VRAM — use it on ≤48 GB cards. |
+| **Scheduler** | `linear` or `cosine` are both fine. |
+| **Gradient checkpointing** | Leave ON unless you have unlimited VRAM. |
+| **Mixed precision** | `bf16` is the recommended default for Ampere/Ada cards. |
+| **Quantization** | `none` unless VRAM is very tight. `int8-quanto` on 32 GB cards. |
+| **Checkpoint every N steps** | `250` is a safe default. Lower if you want to recover quickly from a bad run. |
+
+---
+
+### 4 · Train tab
+*Launch the trainer and watch the live log.*
+
+1. Paste (or type) the path to your saved config YAML in **Config YAML path**.
+2. For single-GPU: leave **Multi-GPU** unticked and click **▶️ Run training**.
+3. For multi-GPU: tick **Multi-GPU**, choose an **Accelerate config** (`ddp` = standard, `fsdp` = VRAM sharding across cards), then run.
+4. Watch the log stream. Training writes checkpoints to the `output_dir` from your config every N steps.
+5. Click **🔄 Refresh checkpoint list** at any time to see what's been saved.
+6. Click **■ Cancel** to stop the training subprocess cleanly.
+
+> ⚠️ **Windows note:** LTX-2 training requires `triton` and `bitsandbytes`, which are Linux-only. On Windows, use **WSL2** for actual training — the Config tab is fully functional for authoring YAML on Windows before pushing to a Linux host.
+
+---
+
+### 5 · Generate tab
+*Run inference with your trained LoRA (or the base model).*
+
+1. **Pipeline** — `ti2vid_two_stages` is the best-quality option (text-to-video + upscaling, needs all four model paths). `distilled` is fastest (8 steps, good for iteration). `ic_lora` = video-to-video with an IC-LoRA.
+2. **Prompt** — describe the target video in detail. Include your LoRA trigger word if you set one.
+3. **Negative prompt** — leave as-is unless you have a reason to change it.
+4. **Your trained LoRA** — paste the path to your `.safetensors` checkpoint and set the **LoRA strength** (1.0 = full effect; 0.5 = blend with base; try 0.7–1.2).
+5. **Resolution / timing** — leave at `0` to use pipeline defaults (`960×544×49` frames ≈ 2 s at 24 fps). Override as needed.
+6. **Seed** — fix a seed for reproducible results; `-1` for random.
+7. **Runtime quantization** — `none` is recommended. `fp8-cast` reduces VRAM at minor quality cost.
+8. Click **🎬 Generate** and watch the log. The result video appears below the log when the subprocess exits.
+
+---
+
+### 6 · Settings tab
+*Power-user knobs — rarely need changing.*
+
+- **HuggingFace token** — required to download gated models (Gemma-3). Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Never appears in config files or logs.
+- **uv executable** — override the `uv` path if it's not on your system PATH.
+- **Python path** — leave blank; `uv run python` manages this automatically.
+- **🔍 Check installation** — runs a health check: GPU detected, all model paths found, LTX-2 repo structure intact. Always run this first if something seems broken.
+
+---
+
+### Typical end-to-end workflow
+
+```
+1. Project tab      → set LTX-2 repo + model paths → Save
+2. Dataset Prep     → Scene split (optional) → Caption → Preprocess
+3. Config tab       → Load LoRA template → tweak LR/steps/rank → Save YAML
+4. Train tab        → paste config path → Run → wait (hours)
+5. Generate tab     → paste checkpoint path → Generate → review output
+6. Iterate          → adjust steps/LR/LoRA strength and repeat from step 3 or 5
+```
+"""
+
 RESOLUTION_BUCKETS_HELP = (
     'Format: `"WxHxF"` where W,H are multiples of 32 and F % 8 == 1. '
     "Valid F: 1, 9, 17, 25, 33, 41, 49, 57, 65, 73, 81, 89, 97, 121. "
@@ -1158,6 +1302,11 @@ def _settings_tab(initial: dict) -> None:
     return hf_token, uv_path, python_path, save_btn, save_status
 
 
+def _directions_tab() -> None:
+    """Render the Directions tab — a full user-facing walkthrough of the UI."""
+    gr.Markdown(DIRECTIONS_MD)
+
+
 def build_ui() -> gr.Blocks:
     initial = _load_settings_dict()
 
@@ -1168,6 +1317,9 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(_hardware_banner_md())
 
         with gr.Tabs():
+            with gr.Tab("📖 Directions"):
+                _directions_tab()
+
             with gr.Tab("Project"):
                 project_fields, project_save_btn, project_save_status = _project_tab(initial)
 
