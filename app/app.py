@@ -369,6 +369,113 @@ def cancel_fn(proc):
 
 
 # =============================================================================
+# Download Models — sequential huggingface-cli downloads with streaming log
+# =============================================================================
+
+# CLAUDE-NOTE: Each model is downloaded one at a time (sequential generators).
+# We concatenate the log across all downloads so the user sees overall progress
+# in a single scrolling textbox. A single Cancel button kills whichever
+# subprocess is currently running.
+
+# (repo_id, filename, local_dir, label)
+_HF_DOWNLOADS: list[tuple[str, str, str, str]] = [
+    (
+        "Lightricks/LTX-2.3",
+        "ltx-2.3-22b-dev.safetensors",
+        "models/ltx-2.3",
+        "LTX-2.3 22B main checkpoint (~40 GB)",
+    ),
+    (
+        "Lightricks/LTX-2",
+        "ltx-2-19b-dev.safetensors",
+        "models/ltx-2",
+        "LTX-2 19B main checkpoint — legacy (~12 GB)",
+    ),
+    (
+        "google/gemma-3-12b-it-qat-q4_0-unquantized",
+        "",   # empty = whole repo
+        "models/gemma-3-12b-it-qat-q4_0-unquantized",
+        "Gemma 3 12B text encoder — gated, needs HF token (~24 GB)",
+    ),
+    (
+        "Lightricks/LTX-2.3",
+        "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+        "models/ltx-2.3",
+        "Spatial upscaler x2 (~2 GB)",
+    ),
+    (
+        "Lightricks/LTX-2.3",
+        "ltx-2.3-22b-distilled-lora-384.safetensors",
+        "models/ltx-2.3",
+        "Distilled LoRA — fast 8-step inference (~1 GB)",
+    ),
+]
+
+
+def download_models_fn(
+    hf_token: str,
+    dl_22b: bool,
+    dl_19b: bool,
+    dl_gemma: bool,
+    dl_upscaler: bool,
+    dl_distilled: bool,
+):
+    """Stream huggingface-cli downloads for the checked models.
+
+    Yields (log_text, proc_handle) matching the _stream_with_state contract
+    so the Cancel button can kill whichever download is active.
+    """
+    flags = [dl_22b, dl_19b, dl_gemma, dl_upscaler, dl_distilled]
+    selected = [
+        (repo, fname, local_dir, label)
+        for (repo, fname, local_dir, label), flag in zip(_HF_DOWNLOADS, flags)
+        if flag
+    ]
+    if not selected:
+        yield "Nothing selected — tick at least one item to download.", None
+        return
+
+    s = settings_mod.load()
+    full_log = ""
+    proc = None
+    for repo_id, filename, local_dir, label in selected:
+        header = (
+            f"\n{'='*60}\n"
+            f"⬇️  Downloading: {label}\n"
+            f"   repo: {repo_id}\n"
+        )
+        if filename:
+            header += f"   file: {filename}\n"
+        header += f"   dest: {local_dir}\n{'='*60}\n"
+        full_log += header
+        yield full_log, proc
+
+        # CLAUDE-NOTE: stream_command yields *accumulated* output for the
+        # current subprocess. We keep full_log as the history of completed
+        # downloads and overlay the live subprocess output via section_log,
+        # so the user always sees both history and current progress.
+        section_log = ""
+        try:
+            for section_log, handle in runner.run_hf_download(
+                s,
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=local_dir,
+                hf_token=hf_token,
+            ):
+                proc = handle
+                yield full_log + section_log, proc
+        except runner.RunnerError as exc:
+            section_log += f"[error] {exc}\n"
+            yield full_log + section_log, proc
+        full_log += section_log + "\n"
+
+    full_log += "\n✅ All selected downloads complete.\n"
+    yield full_log, proc
+
+
+
+# =============================================================================
 # Config tab — template load, form → YAML, validate, save
 # =============================================================================
 
@@ -1307,6 +1414,73 @@ def _directions_tab() -> None:
     gr.Markdown(DIRECTIONS_MD)
 
 
+def _download_models_tab() -> None:
+    """Build the Download Models tab."""
+    gr.Markdown(
+        "Download the LTX-2 model weights from HuggingFace. "
+        "Select what you need and click **⬇️ Download**. "
+        "Downloads are large — expect 1–4 hours on a typical connection.  \n\n"
+        "**Tip:** If you already have the models on disk, skip this tab and "
+        "just update the paths in the **Project** tab instead."
+    )
+
+    hf_token = gr.Textbox(
+        label="HuggingFace token",
+        type="password",
+        placeholder="hf_XXXXXXXXXX",
+        info="Required for Gemma (it is a gated model). Get one at huggingface.co/settings/tokens.",
+    )
+
+    gr.Markdown("### What to download")
+    with gr.Row():
+        with gr.Column():
+            dl_22b = gr.Checkbox(
+                label="LTX-2.3 22B main checkpoint ★ recommended (~40 GB)",
+                value=True,
+            )
+            dl_19b = gr.Checkbox(
+                label="LTX-2 19B main checkpoint — older/legacy (~12 GB)",
+                value=False,
+            )
+            dl_gemma = gr.Checkbox(
+                label="Gemma 3 12B text encoder — gated, needs HF token (~24 GB)",
+                value=True,
+            )
+        with gr.Column():
+            dl_upscaler = gr.Checkbox(
+                label="Spatial upscaler x2 (~2 GB) — inference only",
+                value=True,
+            )
+            dl_distilled = gr.Checkbox(
+                label="Distilled LoRA (~1 GB) — fast 8-step inference only",
+                value=True,
+            )
+
+    gr.Markdown(
+        "_Models land in `app/models/` relative to the launcher. "
+        "After downloading, update the **Project** tab paths to point at them._"
+    )
+
+    with gr.Row():
+        dl_btn = gr.Button("⬇️ Download selected", variant="primary")
+        dl_cancel = gr.Button("■ Cancel")
+
+    dl_log = gr.Textbox(
+        label="Download log",
+        lines=20,
+        max_lines=60,
+        interactive=False,
+    )
+    dl_proc = gr.State(None)
+
+    dl_btn.click(
+        fn=download_models_fn,
+        inputs=[hf_token, dl_22b, dl_19b, dl_gemma, dl_upscaler, dl_distilled],
+        outputs=[dl_log, dl_proc],
+    )
+    dl_cancel.click(fn=cancel_fn, inputs=[dl_proc], outputs=[dl_log])
+
+
 def build_ui() -> gr.Blocks:
     initial = _load_settings_dict()
 
@@ -1319,6 +1493,9 @@ def build_ui() -> gr.Blocks:
         with gr.Tabs():
             with gr.Tab("📖 Directions"):
                 _directions_tab()
+
+            with gr.Tab("⬇️ Download Models"):
+                _download_models_tab()
 
             with gr.Tab("Project"):
                 project_fields, project_save_btn, project_save_status = _project_tab(initial)

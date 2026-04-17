@@ -375,6 +375,47 @@ def list_checkpoints(output_dir: str) -> list[dict[str, object]]:
     return results
 
 
+def run_hf_download(
+    settings: Settings,
+    repo_id: str,
+    filename: str,
+    local_dir: str,
+    *,
+    hf_token: str = "",
+) -> Iterator[tuple[str, subprocess.Popen | None]]:
+    """Download a single file from HuggingFace Hub via huggingface-cli.
+
+    CLAUDE-NOTE: We call `huggingface-cli download` directly rather than the
+    Python API so the user gets a live progress stream in the log box. The
+    CLI prints download speed and ETA to stdout, which stream_command captures.
+    cwd is set to the app/ directory (one level up from where runner.py lives)
+    so relative local_dir paths resolve sensibly.
+    """
+    uv = settings.uv_path or "uv"
+
+    # Ensure huggingface_hub[cli] is present in the venv before trying to
+    # invoke the CLI. This is idempotent (uv pip is fast when already installed).
+    env: dict[str, str] = {}
+    if hf_token.strip():
+        env["HF_TOKEN"] = hf_token.strip()
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
+    # Use Path(__file__).parent as cwd so relative local_dir paths like
+    # "app/models/..." resolve from the launcher root, not from ltx-repo.
+    cwd = Path(__file__).parent
+
+    cmd = [
+        "huggingface-cli", "download",
+        repo_id,
+    ]
+    # CLAUDE-NOTE: Omit filename for whole-repo downloads (e.g. Gemma).
+    # huggingface-cli treats a missing filename as "download entire repo".
+    if filename.strip():
+        cmd.append(filename)
+    cmd += ["--local-dir", local_dir]
+    yield from stream_command(cmd, cwd, env=env or None)
+
+
 def run_process_dataset(
     settings: Settings,
     dataset_json: str,
