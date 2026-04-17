@@ -476,6 +476,105 @@ def download_models_fn(
     yield full_log, proc
 
 
+def refresh_paths_fn() -> tuple[str, str, str, str]:
+    """Reload the 4 model paths from saved settings. Called after download completes."""
+    s = settings_mod.load()
+    return s.model_path, s.text_encoder_path, s.spatial_upscaler_path, s.distilled_lora_path
+
+
+def validate_paths_fn(
+    model_path: str,
+    text_encoder_path: str,
+    spatial_upscaler_path: str,
+    distilled_lora_path: str,
+) -> str:
+    """Validate the 4 current model paths and return a markdown report."""
+    checks = [
+        ("model_path",          model_path,          "Model checkpoint"),
+        ("text_encoder_path",   text_encoder_path,   "Gemma text encoder"),
+        ("spatial_upscaler_path", spatial_upscaler_path, "Spatial upscaler"),
+        ("distilled_lora_path", distilled_lora_path, "Distilled LoRA"),
+    ]
+    lines = ["#### Model path validation\n"]
+    all_ok = True
+    any_set = False
+    for field_name, path, label in checks:
+        if not path.strip():
+            lines.append(f"- **{label}:** _not set_")
+            continue
+        any_set = True
+        valid, msg = settings_mod.validate_model_file(path.strip(), field_name)
+        lines.append(f"- {'✅' if valid else '❌'} **{label}:** {msg}")
+        if not valid:
+            all_ok = False
+    if not any_set:
+        return "_No paths set — nothing to validate._"
+    lines.append(f"\n{'✅ All set paths look correct.' if all_ok else '⚠️ Some paths have issues — see above.'}")
+    return "\n".join(lines)
+
+
+def scan_directory_fn(directory: str) -> tuple[str, dict]:
+    """Scan a directory recursively for LTX models. Returns (markdown_report, results_dict)."""
+    if not directory.strip():
+        return "⚠️ Enter a directory path above, then click Scan.", {}
+    results = settings_mod.scan_external_directory(directory.strip())
+    labels = {
+        "model_path":            "Model checkpoint (.safetensors)",
+        "text_encoder_path":     "Gemma text encoder (directory)",
+        "spatial_upscaler_path": "Spatial upscaler",
+        "distilled_lora_path":   "Distilled LoRA",
+    }
+    lines = [f"#### Scan: `{directory.strip()}`\n"]
+    total = sum(len(v) for v in results.values())
+    if total == 0:
+        lines.append(
+            "Nothing found. Try a broader parent directory "
+            "(e.g. your ComfyUI root or the folder containing your models)."
+        )
+        return "\n".join(lines), {}
+    for field_name, candidates in results.items():
+        if not candidates:
+            continue
+        lines.append(f"\n**{labels[field_name]}**")
+        for c in candidates:
+            icon = "✅" if c["valid"] else "❌"
+            lines.append(f"- {icon} `{c['path']}`  \n  _{c['message']}_")
+    valid_count = sum(1 for v in results.values() for c in v if c["valid"])
+    lines.append(
+        f"\n---\n_Found {total} file(s), {valid_count} valid. "
+        "Click **Apply Valid Paths** to use them._"
+    )
+    return "\n".join(lines), results
+
+
+def apply_scan_results_fn(scan_results: dict) -> tuple:
+    """Apply the first valid candidate per field, save, and return updated path values."""
+    if not scan_results:
+        return gr.update(), gr.update(), gr.update(), gr.update(), "_No scan results — run Scan first._"
+    field_order = ["model_path", "text_encoder_path", "spatial_upscaler_path", "distilled_lora_path"]
+    chosen: dict[str, str | None] = {f: None for f in field_order}
+    for field_name in field_order:
+        for c in scan_results.get(field_name, []):
+            if c["valid"]:
+                chosen[field_name] = c["path"]
+                break
+    s = settings_mod.load()
+    applied = []
+    for field_name, path in chosen.items():
+        if path:
+            setattr(s, field_name, path)
+            applied.append(field_name.replace("_", " "))
+    if applied:
+        settings_mod.save(s)
+    status = ("✅ Applied: " + ", ".join(applied)) if applied else "_No valid paths found to apply._"
+    return (
+        chosen["model_path"] or gr.update(),
+        chosen["text_encoder_path"] or gr.update(),
+        chosen["spatial_upscaler_path"] or gr.update(),
+        chosen["distilled_lora_path"] or gr.update(),
+        status,
+    )
+
 
 # =============================================================================
 # Config tab — template load, form → YAML, validate, save
@@ -816,8 +915,8 @@ def check_installation_fn() -> str:
 # =============================================================================
 
 
-def _project_tab(initial: dict) -> tuple[dict, gr.Markdown]:
-    """Build the Project tab. Returns ({field_name: component}, save_status)."""
+def _project_tab(initial: dict):
+    """Build the Project tab. Returns (fields, save_btn, save_status, extra_components)."""
     gr.Markdown(
         "Configure the paths the rest of the UI uses. Relative paths are "
         "resolved against the launcher repo root. Changes save to "
@@ -863,8 +962,34 @@ def _project_tab(initial: dict) -> tuple[dict, gr.Markdown]:
             placeholder="app/models/ltx-2/ltx-2-22b-distilled-lora-384.safetensors",
         )
 
-    save_btn = gr.Button("💾 Save paths", variant="primary")
+    with gr.Row():
+        save_btn = gr.Button("💾 Save paths", variant="primary")
+        refresh_btn = gr.Button("🔄 Refresh from saved", variant="secondary")
+        validate_btn = gr.Button("🔍 Validate paths")
     save_status = gr.Markdown("")
+    validate_results = gr.Markdown("")
+
+    # --- Browse & Scan External Folder ---
+    with gr.Accordion("📂 Use models from another app (ComfyUI, wan2gp, etc.)", open=False):
+        gr.Markdown(
+            "Point to a folder already containing LTX model files to avoid re-downloading. "
+            "The scan checks filenames, file size, and the safetensors header to confirm "
+            "the files are the correct BF16 training checkpoint — not an FP8 inference variant "
+            "with the same name."
+        )
+        scan_dir = gr.Textbox(
+            label="Directory to scan",
+            placeholder="C:/ComfyUI or /home/user/wan2gp or any parent folder",
+            info="Subfolders are searched automatically.",
+        )
+        scan_btn = gr.Button("🔍 Scan folder", variant="secondary")
+        scan_results_md = gr.Markdown("")
+        # CLAUDE-NOTE: gr.State holds the raw results dict between scan and apply
+        # so apply_scan_results_fn can work without re-scanning.
+        scan_state = gr.State({})
+        with gr.Row():
+            apply_btn = gr.Button("⚡ Apply valid paths", variant="primary")
+            apply_status = gr.Markdown("")
 
     fields = {
         "ltx_repo_path": ltx_repo_path,
@@ -874,7 +999,18 @@ def _project_tab(initial: dict) -> tuple[dict, gr.Markdown]:
         "distilled_lora_path": distilled_lora_path,
         "output_dir": output_dir,
     }
-    return fields, save_btn, save_status
+    extras = {
+        "refresh_btn": refresh_btn,
+        "validate_btn": validate_btn,
+        "validate_results": validate_results,
+        "scan_dir": scan_dir,
+        "scan_btn": scan_btn,
+        "scan_results_md": scan_results_md,
+        "scan_state": scan_state,
+        "apply_btn": apply_btn,
+        "apply_status": apply_status,
+    }
+    return fields, save_btn, save_status, extras
 
 
 def _dataset_prep_tab(default_output_dir: str) -> None:
@@ -1416,14 +1552,15 @@ def _directions_tab() -> None:
     gr.Markdown(DIRECTIONS_MD)
 
 
-def _download_models_tab() -> None:
-    """Build the Download Models tab."""
+def _download_models_tab():
+    """Build the Download Models tab. Returns dl_click_event for chaining .then() in build_ui."""
     gr.Markdown(
         "Download the LTX-2 model weights from HuggingFace. "
         "Select what you need and click **⬇️ Download**. "
         "Downloads are large — expect 1–4 hours on a typical connection.  \n\n"
-        "**Tip:** If you already have the models on disk, skip this tab and "
-        "just update the paths in the **Project** tab instead."
+        "**Tip:** If you already have the models on disk, use the "
+        "**📂 Use models from another app** section in the **Project** tab "
+        "to scan for them instead of re-downloading."
     )
 
     hf_token = gr.Textbox(
@@ -1460,7 +1597,7 @@ def _download_models_tab() -> None:
 
     gr.Markdown(
         "_Models land in `app/models/` relative to the launcher. "
-        "After downloading, update the **Project** tab paths to point at them._"
+        "The Project tab paths are updated automatically when the download finishes._"
     )
 
     with gr.Row():
@@ -1475,12 +1612,15 @@ def _download_models_tab() -> None:
     )
     dl_proc = gr.State(None)
 
-    dl_btn.click(
+    # CLAUDE-NOTE: Return the click EventData so build_ui() can chain .then()
+    # to update the Project tab textboxes after the download generator completes.
+    dl_click_event = dl_btn.click(
         fn=download_models_fn,
         inputs=[hf_token, dl_22b, dl_19b, dl_gemma, dl_upscaler, dl_distilled],
         outputs=[dl_log, dl_proc],
     )
     dl_cancel.click(fn=cancel_fn, inputs=[dl_proc], outputs=[dl_log])
+    return dl_click_event
 
 
 def build_ui() -> gr.Blocks:
@@ -1499,10 +1639,10 @@ def build_ui() -> gr.Blocks:
                 _directions_tab()
 
             with gr.Tab("⬇️ Download Models"):
-                _download_models_tab()
+                dl_click_event = _download_models_tab()
 
             with gr.Tab("Project"):
-                project_fields, project_save_btn, project_save_status = _project_tab(initial)
+                project_fields, project_save_btn, project_save_status, proj_extras = _project_tab(initial)
 
             with gr.Tab("Dataset Prep"):
                 _dataset_prep_tab(default_output_dir=initial["output_dir"])
@@ -1537,6 +1677,47 @@ def build_ui() -> gr.Blocks:
         ]
         project_save_btn.click(fn=_save_settings_from_ui, inputs=all_inputs, outputs=[project_save_status])
         settings_save_btn.click(fn=_save_settings_from_ui, inputs=all_inputs, outputs=[settings_save_status])
+
+        # ---------- Project tab extras wiring ----------
+        _path_outputs = [
+            project_fields["model_path"],
+            project_fields["text_encoder_path"],
+            project_fields["spatial_upscaler_path"],
+            project_fields["distilled_lora_path"],
+        ]
+
+        proj_extras["refresh_btn"].click(
+            fn=refresh_paths_fn,
+            inputs=[],
+            outputs=_path_outputs,
+        )
+
+        proj_extras["validate_btn"].click(
+            fn=validate_paths_fn,
+            inputs=_path_outputs,
+            outputs=[proj_extras["validate_results"]],
+        )
+
+        proj_extras["scan_btn"].click(
+            fn=scan_directory_fn,
+            inputs=[proj_extras["scan_dir"]],
+            outputs=[proj_extras["scan_results_md"], proj_extras["scan_state"]],
+        )
+
+        proj_extras["apply_btn"].click(
+            fn=apply_scan_results_fn,
+            inputs=[proj_extras["scan_state"]],
+            outputs=[*_path_outputs, proj_extras["apply_status"]],
+        )
+
+        # CLAUDE-NOTE: After the download generator finishes, auto-refresh the
+        # Project tab path textboxes so the user doesn't have to switch tabs
+        # and hit Refresh manually.
+        dl_click_event.then(
+            fn=refresh_paths_fn,
+            inputs=[],
+            outputs=_path_outputs,
+        )
 
         # ---------- Config tab wiring ----------
         # Form components in the exact order _config_template_to_form emits.

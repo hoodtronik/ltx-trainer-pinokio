@@ -11,6 +11,7 @@ root or absolute — callers that shell out to LTX-2 should resolve via
 from __future__ import annotations
 
 import json
+import struct
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -155,3 +156,153 @@ def autodetect_and_save() -> dict[str, str]:
     if changed:
         save(s)
     return detected
+
+
+# ---------------------------------------------------------------------------
+# Model validation
+# ---------------------------------------------------------------------------
+
+# CLAUDE-NOTE: Size ranges are ±30% of the real HF file sizes, wide enough to
+# tolerate minor version bumps but narrow enough to catch wrong-model-class
+# errors (e.g. a 3 GB FP8 inference variant instead of the 40 GB BF16 checkpoint).
+_MODEL_SIZE_RANGES: dict[str, tuple[int, int]] = {
+    "ltx-2.3-22b-dev.safetensors":                 (28_000_000_000, 56_000_000_000),  # ~40 GB
+    "ltx-2-19b-dev.safetensors":                   ( 7_000_000_000, 18_000_000_000),  # ~12 GB
+    "ltx-2.3-spatial-upscaler-x2-1.0.safetensors": (  600_000_000,  3_500_000_000),  # ~1.8 GB
+    "ltx-2.3-22b-distilled-lora-384.safetensors":  (  100_000_000,  1_500_000_000),  # ~500 MB
+}
+
+# Filenames to search for when recursively scanning an external directory.
+# Each tuple is (filename, field_name).
+_EXTERNAL_FILE_PATTERNS: list[tuple[str, str]] = [
+    ("ltx-2.3-22b-dev.safetensors",                 "model_path"),
+    ("ltx-2-19b-dev.safetensors",                   "model_path"),
+    ("ltx-2.3-spatial-upscaler-x2-1.0.safetensors", "spatial_upscaler_path"),
+    ("ltx-2.3-22b-distilled-lora-384.safetensors",  "distilled_lora_path"),
+]
+
+_GEMMA_DIR_NAME = "gemma-3-12b-it-qat-q4_0-unquantized"
+# Files that must exist inside the Gemma directory for it to be considered valid.
+_GEMMA_MARKER_FILES = ["tokenizer.json", "config.json"]
+
+
+def _read_safetensors_header(path: Path) -> dict | None:
+    """Read the JSON metadata section of a .safetensors file without loading tensors."""
+    try:
+        with open(path, "rb") as f:
+            size_bytes = f.read(8)
+            if len(size_bytes) < 8:
+                return None
+            header_size = struct.unpack("<Q", size_bytes)[0]
+            if header_size > 50_000_000:  # sanity: header > 50 MB is malformed
+                return None
+            return json.loads(f.read(header_size))
+    except Exception:
+        return None
+
+
+def validate_model_file(path: str, field_name: str) -> tuple[bool, str]:
+    """Check whether a path is likely the correct model variant for LTX training.
+
+    Returns (is_valid, human-readable message).
+    is_valid=False means the file is definitively wrong, missing, or corrupt.
+    """
+    p = Path(resolve_path(path))
+
+    if field_name == "text_encoder_path":
+        if not p.is_dir():
+            return False, "Not a directory — text encoder must be a folder"
+        missing = [f for f in _GEMMA_MARKER_FILES if not (p / f).exists()]
+        if missing:
+            return False, f"Missing {', '.join(missing)} — may not be the Gemma model folder"
+        try:
+            n = sum(1 for _ in p.iterdir())
+        except OSError:
+            n = 0
+        return True, f"✅ Directory OK ({n} files)"
+
+    if not p.is_file():
+        return False, "File not found"
+
+    size = p.stat().st_size
+    if size < 1000:
+        return False, "File is empty or nearly empty — download may be incomplete"
+
+    fname = p.name
+    gb = size / 1_000_000_000
+
+    if fname in _MODEL_SIZE_RANGES:
+        lo, hi = _MODEL_SIZE_RANGES[fname]
+        if size < lo:
+            return False, (
+                f"File too small ({gb:.1f} GB, expected ≥{lo/1e9:.0f} GB). "
+                "This is likely a quantized inference variant — LTX training "
+                "requires the full-precision BF16 base checkpoint."
+            )
+        if size > hi:
+            return False, (
+                f"File larger than expected ({gb:.1f} GB, expected ≤{hi/1e9:.0f} GB). "
+                "Verify this is the correct model."
+            )
+
+    if fname.endswith(".safetensors"):
+        header = _read_safetensors_header(p)
+        if header is None:
+            return False, "Cannot read safetensors header — file may be corrupt or incomplete"
+
+        # CLAUDE-NOTE: Training requires BF16 weights. If >10% of tensors are
+        # quantized (FP8/INT8), this is an inference-only model that will fail
+        # during training. Many community reposts have the same filename as the
+        # official checkpoint but are FP8-quantized for VRAM savings.
+        tensors = {k: v for k, v in header.items() if k != "__metadata__"}
+        if tensors:
+            quant_dtypes = {"F8_E4M3", "F8_E5M2", "I8", "UI8", "I4"}
+            quant_count = sum(
+                1 for v in tensors.values()
+                if isinstance(v, dict) and v.get("dtype") in quant_dtypes
+            )
+            if quant_count > len(tensors) * 0.10:
+                pct = quant_count / len(tensors) * 100
+                return False, (
+                    f"⚠️ {pct:.0f}% of tensors are quantized (FP8/INT8). "
+                    "Training needs the full-precision BF16 checkpoint — "
+                    "this appears to be an inference-optimized model."
+                )
+
+        return True, f"✅ Valid safetensors, BF16 ({gb:.1f} GB)"
+
+    return True, f"✅ File found ({gb:.1f} GB)"
+
+
+# ---------------------------------------------------------------------------
+# External directory scan
+# ---------------------------------------------------------------------------
+
+def scan_external_directory(directory: str) -> dict[str, list[dict]]:
+    """Recursively scan any directory for LTX-compatible model files.
+
+    Returns {field_name: [{"path": str, "valid": bool, "message": str}, ...]}.
+    All matches are returned (not just the first) so the UI can show every
+    option and let the user decide — useful when someone has both FP8 and BF16
+    copies in the same ComfyUI models folder.
+    """
+    results: dict[str, list[dict]] = {k: [] for k in _MODEL_CANDIDATES}
+    root = Path(directory)
+    if not root.is_dir():
+        return results
+
+    try:
+        for fname, field_name in _EXTERNAL_FILE_PATTERNS:
+            for match in root.rglob(fname):
+                if match.is_file():
+                    valid, msg = validate_model_file(str(match), field_name)
+                    results[field_name].append({"path": str(match), "valid": valid, "message": msg})
+
+        for match in root.rglob(_GEMMA_DIR_NAME):
+            if match.is_dir():
+                valid, msg = validate_model_file(str(match), "text_encoder_path")
+                results["text_encoder_path"].append({"path": str(match), "valid": valid, "message": msg})
+    except PermissionError:
+        pass
+
+    return results
