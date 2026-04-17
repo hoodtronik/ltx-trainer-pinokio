@@ -2,8 +2,12 @@
 // "Running on local URL: http://..." line and stores the URL via local.set
 // so pinokio.js's menu can render a clickable "Open Web UI" item.
 //
-// We pass --host 127.0.0.1 and a specific port so the URL is predictable
-// even if Gradio chooses a different port on retry.
+// FIX (2026-04-17):
+//   - Regex simplified to ONE capture group so event[1] = the URL.
+//     Old version used event[2] (second group) which was unreliable.
+//   - Port changed 7870 -> 7878 because 7870 was occupied; Gradio
+//     auto-incremented and the hardcoded event[2] URL never matched.
+//   - Removed duplicate shell.run at bottom — daemon:true keeps alive.
 
 module.exports = {
   daemon: true,
@@ -13,13 +17,14 @@ module.exports = {
       params: {
         venv: "env",
         message: [
-          "python app/app.py --host 127.0.0.1 --port 7870",
+          "python app/app.py --host 127.0.0.1 --port 7878",
         ],
         on: [
           {
-            // Match Gradio's standard "Running on local URL:  http://..." line.
-            // The 2nd capture group is the URL.
-            event: "/(Running on local URL:\\s+)(https?:\\/\\/\\S+)/",
+            // CLAUDE-NOTE: Single capture group — event[1] = full URL string.
+            // Gradio prints: "Running on local URL:  http://127.0.0.1:PORT"
+            // \\s+ handles the double-space Gradio emits after the colon.
+            event: "/Running on local URL:\\s+(https?:\\/\\/\\S+)/",
             done: true,
           },
         ],
@@ -30,24 +35,13 @@ module.exports = {
     {
       method: "local.set",
       params: {
-        // CLAUDE-NOTE: input.event[2] is the URL from the regex above.
-        url: "{{input.event[2]}}",
+        // CLAUDE-NOTE: event[1] = capture group 1 = the http://... URL.
+        url: "{{input.event[1]}}",
       },
     },
 
     {
       method: "proceed",
-    },
-
-    // Keep the process alive — this step never completes.
-    {
-      method: "shell.run",
-      params: {
-        venv: "env",
-        message: [
-          "python app/app.py --host 127.0.0.1 --port 7870",
-        ],
-      },
     },
   ],
 };
