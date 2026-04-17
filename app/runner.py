@@ -82,6 +82,12 @@ def stream_command(
     the handle's returncode set.
     """
     full_env = os.environ.copy()
+    # CLAUDE-NOTE: Force UTF-8 for all child processes on Windows so tools
+    # like `hf` (which prints ✓ checkmarks) don't crash with a charmap
+    # codec error. PYTHONUTF8=1 covers Python-based tools; PYTHONIOENCODING
+    # covers older tools that read the env var instead of the mode flag.
+    full_env["PYTHONUTF8"] = "1"
+    full_env["PYTHONIOENCODING"] = "utf-8"
     if env:
         full_env.update(env)
 
@@ -92,13 +98,17 @@ def stream_command(
 
     # CLAUDE-NOTE: stderr merged into stdout so UI users see everything in
     # one stream (rich/tqdm often write to stderr). bufsize=1 = line-buffered.
+    # encoding='utf-8' + errors='replace': hf/tqdm print Unicode checkmarks
+    # (✓ U+2713) that Windows cp1252 can't handle — 'replace' turns any
+    # un-decodable byte into '?' instead of raising UnicodeDecodeError.
     process = subprocess.Popen(  # noqa: S603 - argv is list-form, no shell
         list(cmd),
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=full_env,
     )
     assert process.stdout is not None  # noqa: S101
