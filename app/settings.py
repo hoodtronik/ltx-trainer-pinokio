@@ -144,13 +144,30 @@ def scan_model_paths() -> dict[str, str]:
     return found
 
 
+def _stored_path_exists(s: "Settings", field_name: str) -> bool:
+    """Return True if the stored path for field_name actually exists on disk."""
+    raw = getattr(s, field_name, "")
+    if not raw:
+        return False
+    resolved = Path(resolve_path(raw))
+    if field_name == "text_encoder_path":
+        return resolved.is_dir()
+    return resolved.is_file()
+
+
 def autodetect_and_save() -> dict[str, str]:
-    """Scan for models, merge into settings (non-destructively), save, return found dict."""
+    """Scan app/models/ for known files, update settings, save, return found dict.
+
+    CLAUDE-NOTE: Overrides a stored path when it is empty OR when it no longer
+    exists on disk (stale path from a previous install or location change).
+    Existing paths that resolve to real files/dirs are left untouched so
+    manual overrides survive app restarts.
+    """
     s = load()
     detected = scan_model_paths()
     changed = False
     for field_name, rel_path in detected.items():
-        if not getattr(s, field_name, ""):
+        if not _stored_path_exists(s, field_name):
             setattr(s, field_name, rel_path)
             changed = True
     if changed:

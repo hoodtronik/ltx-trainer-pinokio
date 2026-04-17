@@ -49,12 +49,21 @@ The full workflow is: **Project → Dataset Prep → Config → Train → Genera
 |---|---|
 | **LTX-2 repo path** | Path to the cloned `LTX-Video-Trainer` repo. Default `../LTX-2` works if installed via Pinokio. |
 | **Training output dir** | Where checkpoints and generated samples land. E.g. `app/outputs`. |
-| **Model checkpoint** | Your downloaded `ltx-2-19b-dev.safetensors` file. |
+| **Model checkpoint** | Your `ltx-2.3-22b-dev.safetensors` file (must be the full BF16 checkpoint, ~40 GB). |
 | **Gemma text encoder** | The **directory** containing the Gemma-3 12B text encoder (not a single file). |
 | **Spatial upscaler** | Optional. Used only at inference for 2× resolution boost. |
 | **Distilled LoRA** | Optional. A pre-trained distilled LoRA for faster 8-step inference. |
 
 **Click 💾 Save paths** when done. Paths can be relative (resolved against the launcher root) or absolute.
+
+#### Already have the models somewhere?
+
+Use the **📂 Find models already on disk** section (visible directly on the Project tab, below the path fields).
+Paste any parent folder — e.g. your ComfyUI root, a wan2gp models folder, or the Pinokio `app/models/` directory — and click **🔍 Scan**.
+The scanner walks all subfolders looking for the exact LTX filenames, then checks the file size and safetensors header to confirm each file is the correct full-precision training checkpoint and not an FP8/INT8 inference variant that happens to share the same filename.
+Click **⚡ Apply valid paths** to write the found paths to the fields above.
+
+> ⚠️ **Common trap:** Many community re-posts of LTX use the same filename (`ltx-2.3-22b-dev.safetensors`) but are FP8-quantized for inference. They are **not usable for training**. The scanner detects this automatically and marks them ❌.
 
 ---
 
@@ -969,27 +978,29 @@ def _project_tab(initial: dict):
     save_status = gr.Markdown("")
     validate_results = gr.Markdown("")
 
-    # --- Browse & Scan External Folder ---
-    with gr.Accordion("📂 Use models from another app (ComfyUI, wan2gp, etc.)", open=False):
-        gr.Markdown(
-            "Point to a folder already containing LTX model files to avoid re-downloading. "
-            "The scan checks filenames, file size, and the safetensors header to confirm "
-            "the files are the correct BF16 training checkpoint — not an FP8 inference variant "
-            "with the same name."
-        )
+    # --- Scan for existing models ---
+    gr.Markdown(
+        "### 📂 Find models already on disk\n"
+        "If you already have the LTX models in another app (ComfyUI, wan2gp, a previous "
+        "download folder, etc.), paste the parent directory below and click **Scan**. "
+        "Subfolders are searched automatically. The scanner checks file size and the "
+        "safetensors header to confirm each file is the full-precision BF16 training "
+        "checkpoint — not an FP8/INT8 inference variant with the same name."
+    )
+    with gr.Row():
         scan_dir = gr.Textbox(
             label="Directory to scan",
-            placeholder="C:/ComfyUI or /home/user/wan2gp or any parent folder",
-            info="Subfolders are searched automatically.",
+            placeholder="C:/ComfyUI  or  F:/pinokio/api/ltx-trainer-pinokio.git/app/models  or any parent folder",
+            scale=4,
         )
-        scan_btn = gr.Button("🔍 Scan folder", variant="secondary")
-        scan_results_md = gr.Markdown("")
-        # CLAUDE-NOTE: gr.State holds the raw results dict between scan and apply
-        # so apply_scan_results_fn can work without re-scanning.
-        scan_state = gr.State({})
-        with gr.Row():
-            apply_btn = gr.Button("⚡ Apply valid paths", variant="primary")
-            apply_status = gr.Markdown("")
+        scan_btn = gr.Button("🔍 Scan", variant="secondary", scale=1)
+    scan_results_md = gr.Markdown("")
+    # CLAUDE-NOTE: gr.State holds the raw results dict between scan and apply
+    # so apply_scan_results_fn can work without re-scanning.
+    scan_state = gr.State({})
+    with gr.Row():
+        apply_btn = gr.Button("⚡ Apply valid paths", variant="primary")
+        apply_status = gr.Markdown("")
 
     fields = {
         "ltx_repo_path": ltx_repo_path,
