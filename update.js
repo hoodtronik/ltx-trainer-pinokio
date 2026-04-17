@@ -12,11 +12,18 @@ module.exports = {
     },
 
     // Update this launcher itself.
+    // CLAUDE-NOTE: Plain `git pull` aborts if the Pinokio runtime dir has any
+    // local modifications or untracked files that conflict with incoming changes.
+    // Use fetch + clean + hard reset instead so updates always succeed.
+    // git clean only removes non-gitignored files; user data (app/models/,
+    // app/outputs/, .user_settings.json, env/) is gitignored and is untouched.
     {
       method: "shell.run",
       params: {
         message: [
-          "git pull",
+          "git fetch origin",
+          "git clean -fd",
+          "git reset --hard origin/main",
         ],
       },
     },
