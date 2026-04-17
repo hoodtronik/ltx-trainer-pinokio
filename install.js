@@ -8,7 +8,7 @@
 //      app/requirements.txt. Kept separate so Gradio's dep tree never
 //      conflicts with the trainer's pinned torch/triton/etc.
 // FIX (2026-04-17): repo was previously cloned as LTX-2.git which does not
-//   exist; the real repo is github.com/Lightricks/LTX-Video.
+//   exist; the real repo is github.com/Lightricks/LTX-Video-Trainer.
 
 module.exports = {
   run: [
@@ -22,7 +22,7 @@ module.exports = {
           "",
           "This will:",
           "  1. Verify uv + git are available (install uv if missing)",
-          "  2. Locate or clone LTX-Video (as ../LTX-2) from github.com/Lightricks/LTX-Video",
+          "  2. Locate or clone LTX-Video-Trainer (as ../LTX-2) from github.com/Lightricks/LTX-Video-Trainer",
           "  3. Run `uv sync` inside LTX-2/ (pyproject.toml is at repo root)",
           "  4. Create a separate Gradio UI venv at env/",
           "",
@@ -45,8 +45,8 @@ module.exports = {
       },
     },
 
-    // Phase 2: resolve or clone LTX-Video into the sibling folder LTX-2.
-    // CLAUDE-NOTE: The actual GitHub repo is Lightricks/LTX-Video (not LTX-2).
+    // Phase 2: resolve or clone LTX-Video-Trainer into the sibling folder LTX-2.
+    // CLAUDE-NOTE: The actual GitHub repo is Lightricks/LTX-Video-Trainer (not LTX-2).
     //   We clone it into the alias folder "LTX-2" so that all subsequent
     //   path references (../LTX-2) remain consistent.
     //   The pyproject.toml lives at the repo root, so `uv sync ../LTX-2` works.
@@ -55,7 +55,7 @@ module.exports = {
       params: {
         path: "..",
         message: [
-          "{{fs.existsSync(path.join(__dirname, '..', 'LTX-2')) ? \"echo 'Found existing LTX-2 at ../LTX-2 — skipping clone.'\" : \"git clone https://github.com/Lightricks/LTX-Video.git LTX-2\"}}",
+          "{{fs.existsSync(path.join(__dirname, '..', 'LTX-2')) ? \"echo 'Found existing LTX-2 at ../LTX-2 — skipping clone.'\" : \"git clone https://github.com/Lightricks/LTX-Video-Trainer.git LTX-2\"}}",
         ],
       },
     },
