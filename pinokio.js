@@ -49,7 +49,8 @@ module.exports = {
       if (local && local.url) {
         return [
           { default: true, icon: "fa-solid fa-rocket", text: "Open Web UI", href: local.url },
-          { icon: "fa-solid fa-terminal", text: "View Logs", href: "start.js" },
+          { icon: "fa-solid fa-terminal", text: "Terminal", href: "terminal.js" },
+          { icon: "fa-solid fa-scroll", text: "View Logs", href: "start.js" },
           { icon: "fa-solid fa-stop", text: "Stop", href: "stop.js" },
         ];
       }
@@ -60,6 +61,7 @@ module.exports = {
 
     return [
       { default: true, icon: "fa-solid fa-power-off", text: "Start", href: "start.js" },
+      { icon: "fa-solid fa-terminal", text: "Terminal", href: "terminal.js" },
       { icon: "fa-solid fa-download", text: "Download Models", href: "download_models.js" },
       { icon: "fa-solid fa-rotate", text: "Update", href: "update.js" },
       { icon: "fa-solid fa-plug", text: "Re-install", href: "install.js" },
