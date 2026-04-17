@@ -2,15 +2,15 @@
 // "Running on local URL: http://..." line and stores the URL via local.set
 // so pinokio.js's menu can render a clickable "Open Web UI" item.
 //
-// FIX (2026-04-17): removed `next: null` from the shell.run step.
-// `next: null` was preventing the pipeline from advancing to `local.set`
-// after `done: true` fired — the URL was captured but never stored,
-// so the menu stayed stuck on "Starting...".
+// History of fixes (2026-04-17):
+//   - Removed next:null which blocked pipeline from reaching local.set.
+//   - Removed `proceed` step — not a valid RPC method in this Pinokio version.
+//   - daemon:true keeps the shell process alive; no keepalive shell needed.
 //
-// Regex has 2 capture groups:
-//   event[0] = full match
-//   event[1] = "Running on local URL:  " (prefix)
-//   event[2] = "http://127.0.0.1:7870"  (the URL we want)
+// Regex capture groups:
+//   event[0] = full match string
+//   event[1] = "Running on local URL:  " (prefix — not used)
+//   event[2] = "http://127.0.0.1:7870"  (the URL stored via local.set)
 
 module.exports = {
   daemon: true,
@@ -24,15 +24,11 @@ module.exports = {
         ],
         on: [
           {
-            // Match Gradio's "Running on local URL:  http://..." line.
-            // event[2] = the URL (2nd capture group).
             event: "/(Running on local URL:\\s+)(https?:\\/\\/\\S+)/",
             done: true,
           },
         ],
       },
-      // CLAUDE-NOTE: next:null deliberately removed — it was blocking the
-      // pipeline from reaching local.set after done:true fired.
     },
 
     {
@@ -40,10 +36,6 @@ module.exports = {
       params: {
         url: "{{input.event[2]}}",
       },
-    },
-
-    {
-      method: "proceed",
     },
   ],
 };
