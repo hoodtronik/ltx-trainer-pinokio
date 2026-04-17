@@ -92,3 +92,66 @@ def resolve_path(p: str) -> str:
     if not candidate.is_absolute():
         candidate = REPO_ROOT / candidate
     return str(candidate.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Model auto-detection
+# ---------------------------------------------------------------------------
+
+# CLAUDE-NOTE: Ordered by priority — first match wins for each field.
+# Relative to REPO_ROOT so paths stored in settings work cross-machine.
+_MODEL_CANDIDATES: dict[str, list[str]] = {
+    "model_path": [
+        "app/models/ltx-2.3/ltx-2.3-22b-dev.safetensors",
+        "app/models/ltx-2/ltx-2-19b-dev.safetensors",
+    ],
+    "text_encoder_path": [
+        "app/models/gemma-3-12b-it-qat-q4_0-unquantized",
+    ],
+    "spatial_upscaler_path": [
+        "app/models/ltx-2.3/ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+        "app/models/ltx-2/ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+    ],
+    "distilled_lora_path": [
+        "app/models/ltx-2.3/ltx-2.3-22b-distilled-lora-384.safetensors",
+        "app/models/ltx-2/ltx-2.3-22b-distilled-lora-384.safetensors",
+    ],
+}
+
+
+def scan_model_paths() -> dict[str, str]:
+    """Scan app/models/ for known model files and return relative paths.
+
+    CLAUDE-NOTE: Returns only fields for which a file/dir was actually found.
+    The caller merges this with existing settings — existing non-empty values
+    are always preferred over detected ones so the user's manual overrides are
+    never clobbered.
+    """
+    found: dict[str, str] = {}
+    for field_name, candidates in _MODEL_CANDIDATES.items():
+        for rel in candidates:
+            candidate = REPO_ROOT / rel
+            # text_encoder_path must be a directory; the rest must be files.
+            if field_name == "text_encoder_path":
+                if candidate.is_dir():
+                    found[field_name] = rel
+                    break
+            else:
+                if candidate.is_file():
+                    found[field_name] = rel
+                    break
+    return found
+
+
+def autodetect_and_save() -> dict[str, str]:
+    """Scan for models, merge into settings (non-destructively), save, return found dict."""
+    s = load()
+    detected = scan_model_paths()
+    changed = False
+    for field_name, rel_path in detected.items():
+        if not getattr(s, field_name, ""):
+            setattr(s, field_name, rel_path)
+            changed = True
+    if changed:
+        save(s)
+    return detected

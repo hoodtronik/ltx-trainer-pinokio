@@ -471,6 +471,8 @@ def download_models_fn(
         full_log += section_log + "\n"
 
     full_log += "\n✅ All selected downloads complete.\n"
+    settings_mod.autodetect_and_save()
+    full_log += "🔍 Auto-detected downloaded models and saved to settings.\n"
     yield full_log, proc
 
 
@@ -1482,6 +1484,8 @@ def _download_models_tab() -> None:
 
 
 def build_ui() -> gr.Blocks:
+    # Auto-detect any models that might have been downloaded or placed manually on startup
+    settings_mod.autodetect_and_save()
     initial = _load_settings_dict()
 
     # CLAUDE-NOTE: Gradio 6+ moved `theme` from Blocks() to launch(). The
