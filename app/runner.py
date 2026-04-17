@@ -405,7 +405,7 @@ def run_hf_download(
     cwd = Path(__file__).parent
 
     cmd = [
-        "huggingface-cli", "download",
+        "hf", "download",
         repo_id,
     ]
     # CLAUDE-NOTE: Omit filename for whole-repo downloads (e.g. Gemma).

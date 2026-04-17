@@ -45,7 +45,7 @@ module.exports = {
       method: "shell.run",
       params: {
         message: [
-          "{{platform === 'win32' ? 'uv pip install --python env\\\\Scripts\\\\python.exe -U huggingface_hub[cli,hf_transfer]' : 'uv pip install --python env/bin/python -U huggingface_hub[cli,hf_transfer]'}}",
+          "{{platform === 'win32' ? 'uv pip install --python env\\\\Scripts\\\\python.exe -U huggingface_hub[hf_transfer]' : 'uv pip install --python env/bin/python -U huggingface_hub[hf_transfer]'}}",
         ],
       },
     },
@@ -60,7 +60,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-dev.safetensors --local-dir app/models/ltx-2.3",
+          "hf download Lightricks/LTX-2.3 ltx-2.3-22b-dev.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
       when: "{{input.dl_main_22b}}",
@@ -76,7 +76,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2 ltx-2-19b-dev.safetensors --local-dir app/models/ltx-2",
+          "hf download Lightricks/LTX-2 ltx-2-19b-dev.safetensors --local-dir app/models/ltx-2",
         ],
       },
       when: "{{input.dl_main_19b}}",
@@ -92,7 +92,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir app/models/gemma-3-12b-it-qat-q4_0-unquantized",
+          "hf download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir app/models/gemma-3-12b-it-qat-q4_0-unquantized",
         ],
       },
       when: "{{input.dl_gemma}}",
@@ -108,7 +108,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.0.safetensors --local-dir app/models/ltx-2.3",
+          "hf download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.0.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
       when: "{{input.dl_upscaler}}",
@@ -124,7 +124,7 @@ module.exports = {
           HF_HUB_ENABLE_HF_TRANSFER: "1",
         },
         message: [
-          "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-22b-distilled-lora-384.safetensors --local-dir app/models/ltx-2.3",
+          "hf download Lightricks/LTX-2.3 ltx-2.3-22b-distilled-lora-384.safetensors --local-dir app/models/ltx-2.3",
         ],
       },
       when: "{{input.dl_distilled}}",
