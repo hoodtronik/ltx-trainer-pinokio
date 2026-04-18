@@ -47,19 +47,43 @@ module.exports = {
     },
 
     // Phase 2: clone the LTX-2 monorepo into app/LTX-2/.
-    // CLAUDE-NOTE: If app/LTX-2/ exists but doesn't contain packages/ (wrong repo
-    //   or a previously failed clone), rename it to app/LTX-2-backup/ to preserve
-    //   any files that might be there, then proceed with a fresh clone.
+    // CLAUDE-NOTE: Split into separate steps with `when` guards because Pinokio
+    //   template expressions only expose `exists()` (relative-path check), not
+    //   Node's `fs.existsSync` or `path.join` or `__dirname`. Using `when` on
+    //   each step lets Pinokio evaluate the condition at runtime and skip
+    //   inapplicable steps cleanly.
     //   Use --depth 1 for fast initial checkout — full history isn't needed for training.
+
+    // Step 2a: backup broken LTX-2 dir on Windows (exists but missing packages/)
     {
+      when: "{{platform === 'win32' && exists('app/LTX-2') && !exists('app/LTX-2/packages')}}",
       method: "shell.run",
       params: {
-        message: [
-          // Step A: backup bad directory if it exists without the monorepo structure
-          "{{(fs.existsSync(path.join(__dirname, 'app', 'LTX-2')) && !fs.existsSync(path.join(__dirname, 'app', 'LTX-2', 'packages'))) ? (platform === 'win32' ? 'move app\\\\LTX-2 app\\\\LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup' : 'mv app/LTX-2 app/LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup') : 'echo ok'}}",
-          // Step B: clone only if packages/ not already there
-          "{{fs.existsSync(path.join(__dirname, 'app', 'LTX-2', 'packages')) ? \"echo 'LTX-2 monorepo already installed at app/LTX-2 — skipping clone.'\" : \"git clone --depth 1 https://github.com/Lightricks/LTX-2.git app/LTX-2\"}}",
-        ],
+        message: "move app\\LTX-2 app\\LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup",
+      },
+    },
+    // Step 2b: backup broken LTX-2 dir on Unix
+    {
+      when: "{{platform !== 'win32' && exists('app/LTX-2') && !exists('app/LTX-2/packages')}}",
+      method: "shell.run",
+      params: {
+        message: "mv app/LTX-2 app/LTX-2-backup && echo Backed up app/LTX-2 to app/LTX-2-backup",
+      },
+    },
+    // Step 2c: clone only if packages/ not already present
+    {
+      when: "{{!exists('app/LTX-2/packages')}}",
+      method: "shell.run",
+      params: {
+        message: "git clone --depth 1 https://github.com/Lightricks/LTX-2.git app/LTX-2",
+      },
+    },
+    // Step 2d: skip message if already installed
+    {
+      when: "{{exists('app/LTX-2/packages')}}",
+      method: "log",
+      params: {
+        text: "LTX-2 monorepo already installed at app/LTX-2 — skipping clone.",
       },
     },
 
